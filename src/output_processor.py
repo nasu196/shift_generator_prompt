@@ -93,10 +93,6 @@ def process_solver_results(status, solver, shifts_vars, employee_ids, date_range
                 shift_int = solver.Value(shifts_vars[(e_idx, d_idx)])
                 shift_sym = SHIFT_MAP_SYM.get(shift_int, '?')
 
-                # --- DEBUG PRINT --- コメント解除
-                if emp_info is not None and emp_info.get('parsed_constraints', {}).get('prefer_weekends_off') and is_weekend_or_holiday:
-                    print(f"DEBUG CHECK: Employee {emp_idx_to_id.get(e_idx)} (Pref Weekends Off), Date: {target_date} (Weekend/Holiday), Assigned: {shift_int} ({shift_sym})")
-
                 # 応援表記の追加 (簡易判定: 担当外フロアの勤務=応援)
                 # TODO: より厳密には is_helping 変数の値を見るべき
                 actual_floor = None
