@@ -2,8 +2,9 @@
 from datetime import date, timedelta
 
 # --- ファイルパス ---
-EMPLOYEE_INFO_FILE = "tmp/シフト作成用_職員情報_v01.csv"
-PAST_SHIFT_FILE = "tmp/介護_直前3日の勤務表.csv"
+EMPLOYEE_INFO_FILE = "input/employees.csv"
+PAST_SHIFT_FILE = "input/past_shifts.csv"
+RULES_FILE = "input/rules.csv"
 OUTPUT_DIR = "results"
 
 # --- 期間設定 ---
@@ -24,9 +25,10 @@ SPECIAL_STATUS_INTS = [SHIFT_MAP_INT['育休']] # 他の休み系記号も追加
 OFF_SHIFT_INTS = [SHIFT_MAP_INT['公'], SHIFT_MAP_INT['育休']] # 休み扱い
 
 # --- 人員配置基準 ---
+# 実験用に単一フロア・少人数に変更
 REQUIRED_PERSONNEL = {
-    "1F": {"早出": 2, "日勤": 4, "夜勤": 2},
-    "2F": {"早出": 3, "日勤": 5, "夜勤": 3},
+    "1F": {"早出": 1, "日勤": 3, "夜勤": 1},
+    # "2F": {"早出": 3, "日勤": 5, "夜勤": 3}, # 元の設定
 }
 
 # --- 制約関連 --- (デフォルト値など)

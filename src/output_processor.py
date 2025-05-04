@@ -65,7 +65,7 @@ def create_shift_dataframe(employees_df, date_range, jp_holidays):
     return df
 
 def process_solver_results(status, solver, shifts_vars, employee_ids, date_range, initial_shift_df, employees_df, jp_holidays):
-    """ソルバーの結果を処理し、シフト情報を埋めたDataFrameを返す (応援表記対応)"""
+    """ソルバーの結果を処理し、シフト情報を埋めたDataFrameを返す"""
     if status == cp_model.OPTIMAL or status == cp_model.FEASIBLE:
         print(f"Processing solution (Status: {solver.StatusName(status)}) ")
         filled_shift_df = initial_shift_df.copy()
@@ -74,41 +74,25 @@ def process_solver_results(status, solver, shifts_vars, employee_ids, date_range
         all_employees = range(len(employee_ids))
         all_days = range(len(date_range))
 
-        # 応援変数を再構築（モデルから直接取得できないため、整合性制約から推測するか、変数名をパースする必要がある）
-        # ここでは簡略化のため、シフト結果から応援かどうかを判定する
-        # (より正確には、build_shift_modelから応援変数も返す必要がある)
-        emp_id_to_info = {emp_id: get_employee_info(employees_df, emp_id) for emp_id in employee_ids}
         emp_idx_to_id = {i: emp_id for i, emp_id in enumerate(employee_ids)}
 
         # DataFrameに結果を書き込む
         for e_idx in all_employees:
             row_index = employee_data_start_row + e_idx
-            emp_info = emp_id_to_info.get(emp_idx_to_id.get(e_idx))
-            original_floor = emp_info['担当フロア'] if emp_info is not None else None
+            # emp_info = emp_id_to_info.get(emp_idx_to_id.get(e_idx)) # 応援表記で使わないなら不要
+            # original_floor = emp_info['担当フロア'] if emp_info is not None else None
 
             for d_idx, date_col in enumerate(target_date_cols):
-                target_date = date_range[d_idx] # 日付取得
+                target_date = date_range[d_idx]
                 weekday = target_date.weekday()
                 is_weekend_or_holiday = (weekday >= 5) or (target_date in jp_holidays)
                 shift_int = solver.Value(shifts_vars[(e_idx, d_idx)])
                 shift_sym = SHIFT_MAP_SYM.get(shift_int, '?')
+                output_shift_sym = shift_sym # デフォルト
 
-                # 応援表記の追加 (簡易判定: 担当外フロアの勤務=応援)
-                # TODO: より厳密には is_helping 変数の値を見るべき
-                actual_floor = None
-                # この日、このシフトで各フロアに何人割り当てられているか？ (概算)
-                # count_1f = sum(1 for e in all_employees if emp_idx_to_floor.get(e) == '1F' and solver.Value(shifts_vars[(e, d_idx)]) == shift_int)
-                # count_2f = sum(1 for e in all_employees if emp_idx_to_floor.get(e) == '2F' and solver.Value(shifts_vars[(e, d_idx)]) == shift_int)
-                # 簡易的な応援判定ロジック（要改善）
-                # if original_floor == '1F' and shift_sym in ['日', '早'] and count_1f < REQUIRED_PERSONNEL.get('1F', {}).get(shift_sym, 0):
-                #      actual_floor = '2F' # 1F担当が2F応援？
-                # elif original_floor == '2F' and shift_sym in ['日', '早'] and count_2f < REQUIRED_PERSONNEL.get('2F', {}).get(shift_sym, 0):
-                #      actual_floor = '1F' # 2F担当が1F応援？
-
-                # この簡易判定は不正確なので、一旦応援表記はつけない
-                output_shift_sym = shift_sym
-                # if actual_floor and actual_floor != original_floor:
-                #      output_shift_sym = f"{shift_sym}({actual_floor})"
+                # 応援表記の追加ロジックを削除 (is_helping_* を受け取らないため)
+                # if shift_int in ... :
+                #    ...
 
                 filled_shift_df.loc[row_index, date_col] = output_shift_sym
 
