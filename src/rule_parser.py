@@ -112,6 +112,9 @@ def validate_and_transform_rule(rule_data, start_date, end_date):
     elif rule_type == 'MAX_CONSECUTIVE_WORK':
         if not isinstance(rule_data.get('max_days'), int) or rule_data['max_days'] <= 0:
              return {'rule_type': 'INVALID', 'reason': f"Invalid max_days for {rule_type}: {rule_data.get('max_days')}"}
+        # is_hard の検証を追加 (オプショナルだが、あれば bool)
+        if 'is_hard' in rule_data and not isinstance(rule_data['is_hard'], bool):
+             return {'rule_type': 'INVALID', 'reason': f"is_hard must be a boolean for {rule_type}"}
 
     elif rule_type == 'FORBID_SHIFT':
         shift = rule_data.get('shift')
@@ -131,17 +134,22 @@ def validate_and_transform_rule(rule_data, start_date, end_date):
              return {'rule_type': 'INVALID', 'reason': f"Invalid or missing shift symbol for {rule_type}: {shift}"}
 
     elif rule_type == 'TOTAL_SHIFT_COUNT':
-        shifts = rule_data.get('shifts')
-        if not isinstance(shifts, list) or not all(is_valid_shift(s) for s in shifts):
-             return {'rule_type': 'INVALID', 'reason': f"Invalid shifts list for {rule_type}: {shifts}"}
+        shifts_list = rule_data.get('shifts')
+        if not isinstance(shifts_list, list) or not all(is_valid_shift(s) for s in shifts_list):
+             return {'rule_type': 'INVALID', 'reason': f"Invalid shifts list for {rule_type}: {shifts_list}"}
         min_val = rule_data.get('min')
         max_val = rule_data.get('max')
+        if min_val is None and max_val is None:
+             return {'rule_type': 'INVALID', 'reason': f"min or max must be specified for {rule_type}"}
         if min_val is not None and (not isinstance(min_val, int) or min_val < 0):
             return {'rule_type': 'INVALID', 'reason': f"Invalid min value for {rule_type}: {min_val}"}
         if max_val is not None and (not isinstance(max_val, int) or max_val < 0):
              return {'rule_type': 'INVALID', 'reason': f"Invalid max value for {rule_type}: {max_val}"}
         if min_val is not None and max_val is not None and min_val > max_val:
             return {'rule_type': 'INVALID', 'reason': f"min > max for {rule_type}: min={min_val}, max={max_val}"}
+        # is_hard の検証を追加 (オプショナルだが、あれば bool)
+        if 'is_hard' in rule_data and not isinstance(rule_data['is_hard'], bool):
+             return {'rule_type': 'INVALID', 'reason': f"is_hard must be a boolean for {rule_type}"}
 
     elif rule_type == 'PREFER_WEEKDAY_SHIFT': # PREFER_WEEKDAY_SHIFT の検証を追加 (weightはオプショナル)
          if not isinstance(rule_data.get('weekday'), int) or not (0 <= rule_data['weekday'] <= 6):
@@ -152,10 +160,16 @@ def validate_and_transform_rule(rule_data, start_date, end_date):
          weight = rule_data.get('weight')
          if weight is not None and not isinstance(weight, (int, float)):
              return {'rule_type': 'INVALID', 'reason': f"Invalid weight for {rule_type}: {weight}"}
+         # is_hard の検証を追加 (オプショナルだが、あれば bool)
+         if 'is_hard' in rule_data and not isinstance(rule_data['is_hard'], bool):
+             return {'rule_type': 'INVALID', 'reason': f"is_hard must be a boolean for {rule_type}"}
 
     elif rule_type == 'MAX_CONSECUTIVE_OFF':
         if not isinstance(rule_data.get('max_days'), int) or rule_data['max_days'] <= 0:
              return {'rule_type': 'INVALID', 'reason': f"Invalid max_days for {rule_type}: {rule_data.get('max_days')}"}
+        # is_hard の検証を追加 (オプショナルだが、あれば bool)
+        if 'is_hard' in rule_data and not isinstance(rule_data['is_hard'], bool):
+             return {'rule_type': 'INVALID', 'reason': f"is_hard must be a boolean for {rule_type}"}
 
     elif rule_type == 'FORBID_SHIFT_SEQUENCE':
         pre_shift = rule_data.get('preceding_shift')

@@ -64,7 +64,9 @@ def build_shift_model(employees_df, past_shifts_df, date_range, jp_holidays, str
     weekday_penalties = []
     night_preference_penalties = []
     ake_count_deviation_penalties = []
-    total_off_day_deviation_penalties = []
+    max_consecutive_work_penalties = [] # 追加済み
+    max_consecutive_off_penalties = [] # 追加済み
+    total_shift_count_penalties = [] # 新しいペナルティリスト
     off_days_difference = None # 均等化用
     full_time_employee_indices = [] # 均等化用
     num_off_days_vars = {} # 均等化用
@@ -122,7 +124,7 @@ def build_shift_model(employees_df, past_shifts_df, date_range, jp_holidays, str
             if rule_type == 'SPECIFY_DATE_SHIFT':
                 target_date = rule.get('date')
                 shift_sym = rule.get('shift')
-                is_hard = rule.get('is_hard') # is_hard を取得 (デフォルトTrueはやめる)
+                is_hard = rule.get('is_hard', True) # is_hard を取得 (デフォルトTrueはやめる)
 
                 if target_date in date_to_d_idx and shift_sym in SHIFT_MAP_INT and isinstance(is_hard, bool):
                     d_idx = date_to_d_idx[target_date]
@@ -147,11 +149,18 @@ def build_shift_model(employees_df, past_shifts_df, date_range, jp_holidays, str
 
             elif rule_type == 'MAX_CONSECUTIVE_WORK':
                 max_days = rule.get('max_days')
-                if isinstance(max_days, int) and max_days >= 0 and f'max_work_{e_idx}' not in processed_rule_types:
-                    # (連勤制約#6のロジック)
+                is_hard = rule.get('is_hard', True) # is_hard がなければ True (ハード) とする
+                rule_key = f"max_work_{e_idx}" # 複数適用防止キー
+
+                # パラメータ検証 (念のため)
+                if not (isinstance(max_days, int) and max_days >= 0 and isinstance(is_hard, bool)):
+                    print(f"警告(モデル): 無効なパラメータを持つ MAX_CONSECUTIVE_WORK ルールをスキップ: {rule}")
+                    continue
+
+                if rule_key not in processed_rule_types:
                     initial_consecutive_work = 0
                     if past_shifts_lookup is not None and emp_id in past_shifts_lookup.index:
-                         for i in range(1, max_days + 2): # +2 for checking boundary
+                         for i in range(1, max_days + 2):
                               past_date_str = (START_DATE - timedelta(days=i)).strftime('%#m/%#d')
                               if past_date_str in past_shifts_lookup.columns:
                                   past_shift = past_shifts_lookup.loc[emp_id, past_date_str]
@@ -159,12 +168,17 @@ def build_shift_model(employees_df, past_shifts_df, date_range, jp_holidays, str
                                       initial_consecutive_work += 1
                                   else: break
                               else: break
+
+                    # 各日が勤務かどうかのブール変数 (変更なし)
                     is_working = [model.NewBoolVar(f'is_work_r6_e{e_idx}_d{d_idx}') for d_idx in all_days]
                     allowed_tuples = [(s,) for s in WORKING_SHIFTS_INT]
                     for d_idx in all_days:
                          model.AddAllowedAssignments((shifts[(e_idx, d_idx)],), allowed_tuples).OnlyEnforceIf(is_working[d_idx])
                          model.AddForbiddenAssignments((shifts[(e_idx, d_idx)],), allowed_tuples).OnlyEnforceIf(is_working[d_idx].Not())
+
                     window_size = max_days + 1
+                    max_consecutive_work_penalties = [] # ソフト制約用のペナルティリスト
+
                     for d_start in range(-initial_consecutive_work, num_days - max_days):
                          vars_in_window = []
                          for d_offset in range(window_size):
@@ -172,12 +186,36 @@ def build_shift_model(employees_df, past_shifts_df, date_range, jp_holidays, str
                               if d_current < 0: continue
                               if d_current >= num_days: break
                               vars_in_window.append(is_working[d_current])
+
+                         window_sum_expr = cp_model.LinearExpr.Sum(vars_in_window)
+                         effective_max_days = max_days
                          if d_start < 0:
+                              # 開始日より前の期間を含む場合、有効なウィンドウサイズで上限を調整
                               effective_window_size = window_size + d_start
-                              if effective_window_size > 0: model.Add(sum(vars_in_window) <= effective_window_size - 1)
-                         elif vars_in_window: model.Add(sum(vars_in_window) <= max_days)
-                    processed_rule_types.add(f'max_work_{e_idx}') # 処理済みマーク
-                # else: print(...) エラー処理
+                              if effective_window_size <= 0: continue
+                              # effective_max_days = effective_window_size - 1 # これだと常に違反しない？
+                              effective_max_days = max(0, effective_window_size - 1) # 0日以上とする
+                         
+                         if is_hard:
+                             # ハード制約: ウィンドウ内の勤務日数が上限以下
+                             if effective_max_days < max_days:
+                                 model.Add(window_sum_expr <= effective_max_days)
+                             else:
+                                 model.Add(window_sum_expr <= max_days)
+                         else:
+                             # ソフト制約: 上限を超えた場合にペナルティ
+                             # 超過日数 = max(0, window_sum - effective_max_days)
+                             max_possible_excess = window_size # 最大超過日数
+                             excess_var = model.NewIntVar(0, max_possible_excess, f'max_work_excess_e{e_idx}_d{d_start}')
+                             # window_sum_expr - effective_max_days <= excess_var を表現
+                             model.Add(window_sum_expr - effective_max_days <= excess_var)
+                             # excess_var >= 0 は NewIntVar で定義済み
+                             max_consecutive_work_penalties.append(excess_var)
+
+                    processed_rule_types.add(rule_key) # 処理済みマーク
+
+                    # ソフト制約の場合、ペナルティを目的関数に追加 (後でまとめて行うのでここではリストに追加のみ)
+                    # TODO: max_consecutive_work_penalties を目的関数の penalties_with_weights に追加する -> 削除
 
             elif rule_type == 'FORBID_SHIFT':
                 shift_sym = rule.get('shift')
@@ -223,8 +261,15 @@ def build_shift_model(employees_df, past_shifts_df, date_range, jp_holidays, str
                  target_shifts_sym = rule.get('shifts')
                  min_count = rule.get('min')
                  max_count = rule.get('max')
-                 rule_key = f"total_{e_idx}_{'_'.join(target_shifts_sym)}_{min_count}_{max_count}"
-                 if isinstance(target_shifts_sym, list) and rule_key not in processed_rule_types:
+                 is_hard = rule.get('is_hard', True) # is_hard がなければ True (ハード)
+                 rule_key = f"total_{e_idx}_{'_'.join(target_shifts_sym)}_{min_count}_{max_count}_{is_hard}"
+
+                 # パラメータ検証 (念のため)
+                 if not (isinstance(target_shifts_sym, list) and (min_count is not None or max_count is not None) and isinstance(is_hard, bool)):
+                     print(f"警告(モデル): 無効なパラメータを持つ TOTAL_SHIFT_COUNT ルールをスキップ: {rule}")
+                     continue
+
+                 if rule_key not in processed_rule_types:
                       target_ints = [SHIFT_MAP_INT[s] for s in target_shifts_sym if s in SHIFT_MAP_INT]
                       if target_ints:
                            count_vars = []
@@ -234,8 +279,26 @@ def build_shift_model(employees_df, past_shifts_df, date_range, jp_holidays, str
                                 model.AddAllowedAssignments((shifts[(e_idx, d_idx)],), allowed_tuples).OnlyEnforceIf(is_target)
                                 model.AddForbiddenAssignments((shifts[(e_idx, d_idx)],), allowed_tuples).OnlyEnforceIf(is_target.Not())
                                 count_vars.append(is_target)
-                           if min_count is not None: model.Add(sum(count_vars) >= min_count)
-                           if max_count is not None: model.Add(sum(count_vars) <= max_count)
+                           actual_count_expr = cp_model.LinearExpr.Sum(count_vars)
+
+                           if is_hard:
+                               # ハード制約
+                               if min_count is not None: model.Add(actual_count_expr >= min_count)
+                               if max_count is not None: model.Add(actual_count_expr <= max_count)
+                           else:
+                               # ソフト制約: 目標からの差分をペナルティとする
+                               max_possible_deviation = num_days # 最大の差分は期間日数
+                               if min_count is not None:
+                                   # 不足分 = max(0, min_count - actual_count)
+                                   deviation_min = model.NewIntVar(0, max_possible_deviation, f'total_shift_dev_min_e{e_idx}_{rule_key[:5]}')
+                                   model.Add(min_count - actual_count_expr <= deviation_min)
+                                   total_shift_count_penalties.append(deviation_min)
+                               if max_count is not None:
+                                   # 超過分 = max(0, actual_count - max_count)
+                                   deviation_max = model.NewIntVar(0, max_possible_deviation, f'total_shift_dev_max_e{e_idx}_{rule_key[:5]}')
+                                   model.Add(actual_count_expr - max_count <= deviation_max)
+                                   total_shift_count_penalties.append(deviation_max)
+
                            processed_rule_types.add(rule_key)
                       else:
                          print(f"警告(モデル): TOTAL_SHIFT_COUNT の shifts が無効: {rule}")
@@ -244,30 +307,31 @@ def build_shift_model(employees_df, past_shifts_df, date_range, jp_holidays, str
 
             elif rule_type == 'MAX_CONSECUTIVE_OFF':
                 max_off_days = rule.get('max_days')
-                if isinstance(max_off_days, int) and max_off_days >= 0 and f'max_off_{e_idx}' not in processed_rule_types:
-                    # (MAX_CONSECUTIVE_WORK に似たロジックで連続公休を制限)
-                    # 公休を判定する変数を作成
+                is_hard = rule.get('is_hard', True) # is_hard がなければ True (ハード) とする
+                rule_key = f'max_off_{e_idx}'
+
+                if not (isinstance(max_off_days, int) and max_off_days >= 0 and isinstance(is_hard, bool)):
+                    print(f"警告(モデル): 無効なパラメータを持つ MAX_CONSECUTIVE_OFF ルールをスキップ: {rule}")
+                    continue
+
+                if rule_key not in processed_rule_types:
+                    # (is_off 変数定義、initial_consecutive_off 計算は変更なし)
                     is_off = [model.NewBoolVar(f'is_off_r_maxoff_e{e_idx}_d{d_idx}') for d_idx in all_days]
-                    off_tuples = [(off_int,) for off_int in OFF_SHIFT_INTS] # 公休または特殊休
+                    off_tuples = [(off_int,) for off_int in OFF_SHIFT_INTS]
                     for d_idx in all_days:
                         model.AddAllowedAssignments((shifts[(e_idx, d_idx)],), off_tuples).OnlyEnforceIf(is_off[d_idx])
                         model.AddForbiddenAssignments((shifts[(e_idx, d_idx)],), off_tuples).OnlyEnforceIf(is_off[d_idx].Not())
-
-                    # 過去の連続公休日数を計算 (過去シフトが必要)
                     initial_consecutive_off = 0
                     if past_shifts_lookup is not None and emp_id in past_shifts_lookup.index:
-                        for i in range(1, max_off_days + 2):
+                         for i in range(1, max_off_days + 2):
                             past_date_str = (START_DATE - timedelta(days=i)).strftime('%#m/%#d')
                             if past_date_str in past_shifts_lookup.columns:
                                 past_shift = past_shifts_lookup.loc[emp_id, past_date_str]
                                 if past_shift and past_shift in SHIFT_MAP_INT and SHIFT_MAP_INT[past_shift] in OFF_SHIFT_INTS:
                                     initial_consecutive_off += 1
-                                else:
-                                    break
-                            else:
-                                break
+                                else: break
+                            else: break
 
-                    # ウィンドウ制約を追加
                     window_size = max_off_days + 1
                     for d_start in range(-initial_consecutive_off, num_days - max_off_days):
                         vars_in_window = []
@@ -277,12 +341,27 @@ def build_shift_model(employees_df, past_shifts_df, date_range, jp_holidays, str
                             if d_current >= num_days: break
                             vars_in_window.append(is_off[d_current])
 
+                        window_sum_expr = cp_model.LinearExpr.Sum(vars_in_window)
+                        effective_max_off_days = max_off_days
                         if d_start < 0:
                             effective_window_size = window_size + d_start
-                            if effective_window_size > 0: model.Add(sum(vars_in_window) <= effective_window_size - 1)
-                        elif vars_in_window: model.Add(sum(vars_in_window) <= max_off_days)
+                            if effective_window_size <= 0: continue
+                            effective_max_off_days = max(0, effective_window_size - 1)
 
-                    processed_rule_types.add(f'max_off_{e_idx}') # 処理済みマーク
+                        if is_hard:
+                            # ハード制約: ウィンドウ内の公休日数が上限以下
+                            if effective_max_off_days < max_off_days:
+                                model.Add(window_sum_expr <= effective_max_off_days)
+                            else:
+                                model.Add(window_sum_expr <= max_off_days)
+                        else:
+                            # ソフト制約: 上限を超えた場合にペナルティ
+                            max_possible_excess = window_size
+                            excess_var = model.NewIntVar(0, max_possible_excess, f'max_off_excess_e{e_idx}_d{d_start}')
+                            model.Add(window_sum_expr - effective_max_off_days <= excess_var)
+                            max_consecutive_off_penalties.append(excess_var)
+
+                    processed_rule_types.add(rule_key)
                 else:
                     print(f"警告(モデル): 無効または重複する MAX_CONSECUTIVE_OFF ルール: {rule}")
 
@@ -330,19 +409,28 @@ def build_shift_model(employees_df, past_shifts_df, date_range, jp_holidays, str
             elif rule_type == 'PREFER_WEEKDAY_SHIFT':
                  weekday = rule.get('weekday')
                  shift_sym = rule.get('shift')
-                 weight = rule.get('weight', 1) # デフォルトウェイト追加
-                 if weekday is not None and shift_sym in SHIFT_MAP_INT:
-                      shift_int = SHIFT_MAP_INT[shift_sym]
-                      for d_idx in all_days:
-                           if date_range[d_idx].weekday() == weekday:
-                                penalty_var = model.NewBoolVar(f'weekday_penalty_e{e_idx}_d{d_idx}')
-                                # 重みを考慮してペナルティリストに追加 (重み * 変数)
-                                # LinearExpr に整数係数が必要なため、weightを整数化(丸め)して使う。より厳密には浮動小数点係数を扱える方法を検討。
-                                weekday_penalties.append(penalty_var * int(round(weight * 100))) # 例: 100倍して整数化
-                                model.Add(shifts[(e_idx, d_idx)] != shift_int).OnlyEnforceIf(penalty_var)
-                                model.Add(shifts[(e_idx, d_idx)] == shift_int).OnlyEnforceIf(penalty_var.Not())
-                 else:
-                     print(f"警告(モデル): 無効な PREFER_WEEKDAY_SHIFT ルール: {rule}")
+                 weight = rule.get('weight', 1) # ソフト制約時のデフォルトウェイト
+                 is_hard = rule.get('is_hard', False) # デフォルトは False (ソフト)
+
+                 # パラメータ検証 (念のため)
+                 if not (weekday is not None and 0 <= weekday <= 6 and shift_sym in SHIFT_MAP_INT and isinstance(is_hard, bool)):
+                     print(f"警告(モデル): 無効なパラメータを持つ PREFER_WEEKDAY_SHIFT ルールをスキップ: {rule}")
+                     continue
+
+                 shift_int = SHIFT_MAP_INT[shift_sym]
+                 for d_idx in all_days:
+                     if date_range[d_idx].weekday() == weekday:
+                         if is_hard:
+                             # ハード制約: 特定曜日は必ず指定シフト
+                             model.Add(shifts[(e_idx, d_idx)] == shift_int)
+                         else:
+                             # ソフト制約: 希望通りでない場合にペナルティ
+                             penalty_var = model.NewBoolVar(f'weekday_penalty_e{e_idx}_d{d_idx}_w{weekday}')
+                             # 重みを考慮 (weightがNoneの場合や型不正は考慮が必要だが、パーサーで弾かれる想定)
+                             penalty_value = int(round(weight * 100)) if isinstance(weight, (int, float)) else 100 # デフォルト重み*100
+                             weekday_penalties.append(penalty_var * penalty_value)
+                             model.Add(shifts[(e_idx, d_idx)] != shift_int).OnlyEnforceIf(penalty_var)
+                             model.Add(shifts[(e_idx, d_idx)] == shift_int).OnlyEnforceIf(penalty_var.Not())
 
             elif rule_type == 'UNKNOWN_FORMAT' or rule_type == 'PARSE_ERROR' or rule_type == 'UNPARSABLE':
                  print(f"情報(モデル): 処理できないルール: {rule}")
@@ -480,9 +568,11 @@ def build_shift_model(employees_df, past_shifts_df, date_range, jp_holidays, str
         (ab_schedule_penalties, 1), # 重みは変数作成時に適用済み
         (weekday_penalties, 1),     # 重みは変数作成時に適用済み
         (night_preference_penalties, 1), # 重みは変数作成時に適用済み
+        (max_consecutive_work_penalties, 1),
+        (max_consecutive_off_penalties, 1),
+        (total_shift_count_penalties, 1), # 追加 (重みは一旦1)
         # (all_help_vars, 1), # 応援スコープ外
         (ake_count_deviation_penalties, 1),
-        # (total_off_day_deviation_penalties, 1) # ハードコード削除により不要
     ]
 
     # 目的関数にペナルティ項を追加
