@@ -287,8 +287,9 @@ def validate_facility_rule(rule_data, start_date, end_date):
 
     # 従業員グループの検証関数
     def is_valid_employee_group(group):
-        # ここでは基本的な検証のみ。役職名など動的なものはshift_model側で検証する方が良いかも
-        return isinstance(group, str) and (group in VALID_EMPLOYEE_GROUPS or group == 'ALL')
+        # 文字列であり、空でないことのみをチェック。
+        # 存在するグループ/役職名かの最終確認は shift_model 側で行う。
+        return isinstance(group, str) and bool(group.strip()) # 空白のみの文字列も False にする
 
     # --- ルールタイプごとの検証 --- 
     if rule_type == 'REQUIRED_STAFFING':
@@ -336,6 +337,53 @@ def validate_facility_rule(rule_data, start_date, end_date):
              return {'rule_type': 'INVALID', 'reason': f"Invalid employee_group for {rule_type}: {group}"}
         if weight is not None and not isinstance(weight, (int, float)):
              return {'rule_type': 'INVALID', 'reason': f"Invalid weight for {rule_type}: {weight}"}
+
+    elif rule_type == 'BALANCE_SPECIFIC_SHIFT_TOTALS':
+        group = rule_data.get('employee_group', 'ALL') # デフォルト 'ALL'
+        target_shifts = rule_data.get('target_shifts')
+        weight = rule_data.get('weight') # オプション
+
+        if not is_valid_employee_group(group):
+            return {'rule_type': 'INVALID', 'reason': f"Invalid employee_group for {rule_type}: {group}"}
+        
+        if not isinstance(target_shifts, list) or not target_shifts: # リストであり、空でない
+            return {'rule_type': 'INVALID', 'reason': f"target_shifts must be a non-empty list for {rule_type}: {target_shifts}"}
+        if not all(is_valid_shift(s) for s in target_shifts): # 各要素が有効なシフト記号か
+            return {'rule_type': 'INVALID', 'reason': f"Invalid shift symbol found in target_shifts for {rule_type}: {target_shifts}"}
+
+        if weight is not None and not isinstance(weight, (int, float)):
+            return {'rule_type': 'INVALID', 'reason': f"Invalid weight for {rule_type}: {weight}"}
+        
+        # デフォルトの重み (もしAIが生成しなかった場合など)
+        if weight is None:
+            rule_data['weight'] = 1 # デフォルト値を設定
+
+    elif rule_type == 'MIN_TOTAL_SHIFT_DAYS':
+        group = rule_data.get('employee_group', 'ALL')
+        shift = rule_data.get('shift') # 対象となるシフト記号 (例: '公')
+        min_count = rule_data.get('min_count')
+        # is_hard は共通部分でチェック済みだが、意味合いとして True が期待されることが多い
+
+        if not is_valid_employee_group(group):
+            return {'rule_type': 'INVALID', 'reason': f"Invalid employee_group for {rule_type}: {group}"}
+        if not is_valid_shift(shift):
+            return {'rule_type': 'INVALID', 'reason': f"Invalid or missing shift symbol for {rule_type}: {shift}"}
+        if not isinstance(min_count, int) or min_count < 0: # 0日もありうる
+            return {'rule_type': 'INVALID', 'reason': f"Invalid min_count for {rule_type}: {min_count}"}
+        if not isinstance(rule_data.get('is_hard'), bool): # is_hard は必須とする
+             return {'rule_type': 'INVALID', 'reason': f"Missing or invalid is_hard for {rule_type}"}
+
+    elif rule_type == 'MAX_CONSECUTIVE_WORK': # 施設版
+        group = rule_data.get('employee_group', 'ALL')
+        max_days = rule_data.get('max_days')
+        # is_hard は共通部分でチェック済み
+
+        if not is_valid_employee_group(group):
+            return {'rule_type': 'INVALID', 'reason': f"Invalid employee_group for {rule_type} (facility version): {group}"}
+        if not isinstance(max_days, int) or max_days <= 0:
+             return {'rule_type': 'INVALID', 'reason': f"Invalid max_days for {rule_type} (facility version): {max_days}"}
+        if not isinstance(rule_data.get('is_hard'), bool): # is_hard は必須とする
+             return {'rule_type': 'INVALID', 'reason': f"Missing or invalid is_hard for {rule_type} (facility version)"}
 
     elif rule_type == 'FORBID_SHIFT': # 施設向け禁止シフト
         group = rule_data.get('employee_group', 'ALL')

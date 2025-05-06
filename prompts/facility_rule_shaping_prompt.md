@@ -47,6 +47,9 @@ AIは、入力された各確認用文章からこれらのパターンを認識
     *   入力例: `(推奨) 1F の 土日 の「早」は最低 1 人確保します。`
     *   リスト要素JSON:
         `{ "rule_type": "REQUIRED_STAFFING", "floor": "1F", "shift": "早", "date_type": "土日", "min_count": 1, "is_hard": false }`
+    *   入力例: `(必須) 2F の ALL の「夜」は最低 2 人必要です。`
+    *   リスト要素JSON:
+        `{ "rule_type": "REQUIRED_STAFFING", "floor": "2F", "shift": "夜", "date_type": "ALL", "min_count": 2, "is_hard": true }`
 
 *   **特定役割の最低出勤 (MIN_ROLE_ON_DUTY):**
     *   入力例: `(必須) 土日祝 は「主任」が最低 1 人出勤します。`
@@ -61,10 +64,26 @@ AIは、入力された各確認用文章からこれらのパターンを認識
     *   リスト要素JSON:
         `{ "rule_type": "MAX_CONSECUTIVE_OFF", "employee_group": "パート", "max_days": 2, "is_hard": false }`
 
+*   **最大連続勤務 (MAX_CONSECUTIVE_WORK):**
+    *   入力例: `(必須) ALL の連続勤務は最大 4 日までです。`
+    *   リスト要素JSON:
+        `{ "rule_type": "MAX_CONSECUTIVE_WORK", "employee_group": "ALL", "max_days": 4, "is_hard": true }`
+    *   入力例: `(推奨) 常勤 の連続勤務はできる限り最大 5 日までに抑えます。`
+    *   リスト要素JSON:
+        `{ "rule_type": "MAX_CONSECUTIVE_WORK", "employee_group": "常勤", "max_days": 5, "is_hard": false }`
+
 *   **公休均等化 (BALANCE_OFF_DAYS):**
     *   入力例: `(推奨) 常勤 の公休日数を均等化します。`
     *   リスト要素JSON:
         `{ "rule_type": "BALANCE_OFF_DAYS", "employee_group": "常勤", "weight": 1 }`
+
+*   **期間中最低公休数 (MIN_TOTAL_SHIFT_DAYS):**
+    *   入力例: `(必須) 正社員 は対象期間中に合計で最低 8 日の公休が必要です。`
+    *   リスト要素JSON:
+        `{ "rule_type": "MIN_TOTAL_SHIFT_DAYS", "employee_group": "正社員", "shift": "公", "min_count": 8, "is_hard": true }`
+    *   入力例: `(推奨) パート は対象期間中に合計で最低 5 日の公休を確保します。`
+    *   リスト要素JSON:
+        `{ "rule_type": "MIN_TOTAL_SHIFT_DAYS", "employee_group": "パート", "shift": "公", "min_count": 5, "is_hard": false }`
 
 *   **シフトシーケンス禁止 (FORBID_SHIFT_SEQUENCE):**
     *   入力例: `(必須) ALL は「夜」の翌日に「早」にはなりません。`
