@@ -45,6 +45,9 @@ def load_employee_data(filepath=EMPLOYEE_INFO_FILE):
         # df['job_title'] = ...
 
         print(f"従業員基本情報を読み込みました: {filepath}")
+        print(f"DEBUG: DataFrame shape: {df.shape}") # DataFrameの行数と列数を表示
+        print(f"DEBUG: DataFrame head:\n{df.head()}") # 最初の5行を表示
+        print(f"DEBUG: DataFrame tail:\n{df.tail()}") # 最後の5行を表示
         # 必要な基本情報カラムのみを返すようにしても良い
         # return df[['職員ID', '職員名', '担当フロア', '役職', '常勤/パート']]
         return df

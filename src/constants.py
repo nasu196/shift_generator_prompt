@@ -15,7 +15,7 @@ PERSONAL_STRUCTURED_DATA_PROMPT_FILE = "prompts/rule_shaping_prompt.md" # 個人
 # FACILITY_AI_PROMPT_FILE = "prompts/facility_rule_shaping_prompt.md" # 古い施設ルール用プロンプト (コメントアウト)
 FACILITY_INTERMEDIATE_PROMPT_FILE = "prompts/facility_rule_intermediate_translation_prompt.md" # 施設ルール用 (ステップ1: 中間翻訳)
 FACILITY_STRUCTURED_DATA_PROMPT_FILE = "prompts/facility_rule_shaping_prompt.md" # 施設ルール用 (ステップ2: structured_data生成)
-AI_MODEL_NAME = 'gemini-2.0-flash' # テストに合わせて変更
+AI_MODEL_NAME = 'models/gemini-2.5-flash-preview-04-17' # テストに合わせて変更
 
 # --- 期間設定 ---
 START_DATE = date(2025, 4, 10)
@@ -34,12 +34,11 @@ WORKING_SHIFTS_INT = [SHIFT_MAP_INT[s] for s in ['日', '早', '夜', '明']]
 SPECIAL_STATUS_INTS = [SHIFT_MAP_INT['育休']] # 他の休み系記号も追加するなら
 OFF_SHIFT_INTS = [SHIFT_MAP_INT['公'], SHIFT_MAP_INT['育休']] # 休み扱い
 
-# --- 人員配置基準 ---
-# 実験用に単一フロア・少人数に変更
-REQUIRED_PERSONNEL = {
-    "1F": {"早出": 1, "日勤": 3, "夜勤": 1},
-    # "2F": {"早出": 3, "日勤": 5, "夜勤": 3}, # 元の設定
-}
+# --- 人員配置基準 --- (現在は facility_rules.txt から AI が解釈するため不要)
+# REQUIRED_PERSONNEL = {
+#     "1F": {"早出": 2, "日勤": 4, "夜勤": 2},
+#     "2F": {"早出": 3, "日勤": 5, "夜勤": 3}
+# }
 
 # --- 制約関連 --- (デフォルト値など)
 DEFAULT_MAX_CONSECUTIVE_WORK = 4

@@ -4,7 +4,7 @@ from datetime import timedelta, date
 
 from src.constants import (
     SHIFT_MAP_INT, WORKING_SHIFTS_INT, OFF_SHIFT_INTS,
-    REQUIRED_PERSONNEL, DEFAULT_MAX_CONSECUTIVE_WORK,
+    DEFAULT_MAX_CONSECUTIVE_WORK,
     MANAGER_MAX_CONSECUTIVE_WORK, MANAGER_ROLES,
     START_DATE,
     WORK_SYMBOLS # 応援変数定義で必要
@@ -440,6 +440,7 @@ def build_shift_model(employees_df, past_shifts_df, date_range, jp_holidays, per
     # --- 目的関数 --- 
     objective_terms = []
     # 各ペナルティリスト名と重み
+    helping_penalties = list(is_helping_1F_to_2F.values()) + list(is_helping_2F_to_1F.values()) # 辞書の値(BoolVar)をリスト化
     penalties_with_weights = [
         (ab_schedule_penalties, 1),
         (weekday_penalties, 1),
@@ -453,14 +454,16 @@ def build_shift_model(employees_df, past_shifts_df, date_range, jp_holidays, per
         (min_role_penalties, 1),
         (forbid_sequence_penalties, 1),
         (enforce_sequence_penalties, 1),
-        # TODO: 応援ペナルティを追加？
+        (helping_penalties, 1), # ★応援ペナルティを追加 (重みは仮に1)
     ]
 
     # 目的関数にペナルティ項を追加
     for penalty_list, weight in penalties_with_weights:
          if penalty_list:
-             # リスト内の各要素(IntVar * weight_int)の合計を取る
-             objective_terms.append(cp_model.LinearExpr.Sum(penalty_list))
+             # リスト内の各要素(IntVar or BoolVar)に重みを掛けて合計
+             # BoolVarもIntVarと同様にSumできる (True=1, False=0)
+             weighted_terms = [term * weight for term in penalty_list]
+             objective_terms.append(cp_model.LinearExpr.Sum(weighted_terms))
 
     # if off_days_difference is not None: # 公休均等化はコメントアウト中
     #     objective_terms.append(off_balance_penalty_weight * off_days_difference)

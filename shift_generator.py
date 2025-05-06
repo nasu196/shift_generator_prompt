@@ -76,8 +76,13 @@ def call_ai_to_translate_personal_rules(natural_language_rules: dict, prompt_tem
         print("AI処理スキップ(個人 Step1): APIキー、プロンプト、または入力ルールが不足しています。")
         return None
 
+    # # ★デバッグ: AIに渡すルールを最初の15件に制限
+    # import itertools
+    # limited_rules = dict(itertools.islice(natural_language_rules.items(), 15))
+    # print(f"DEBUG: Limiting personal rules to first {len(limited_rules)} entries for AI prompt.")
+
     print(f"Calling AI for Step 1: Translating personal rules (Target Year: {target_year})...")
-    input_rules_text = format_rules_for_prompt(natural_language_rules)
+    input_rules_text = format_rules_for_prompt(natural_language_rules) # ★修正: natural_language_rules を使用
     try:
         final_prompt = prompt_template.replace("{input_csv_data}", input_rules_text).replace("{target_year}", str(target_year))
     except Exception as e:
@@ -214,6 +219,12 @@ def main():
     # 1. データの読み込みと準備
     print("Loading base data...")
     employees_df = load_employee_data(EMPLOYEE_INFO_FILE)
+    # ★デバッグ: 読み込み直後の行数を表示
+    if employees_df is not None:
+        print(f"DEBUG: employees_df loaded with {len(employees_df)} rows.")
+    else:
+        print("DEBUG: employees_df is None after loading.")
+
     past_shifts_df = load_past_shifts(PAST_SHIFT_FILE, START_DATE)
     natural_language_rules = load_natural_language_rules()
     facility_rules_list = load_facility_rules()
@@ -228,6 +239,8 @@ def main():
     date_range = get_date_range(START_DATE, END_DATE)
     jp_holidays = get_holidays(START_DATE.year, END_DATE.year)
     employee_ids, emp_id_to_row_index = get_employee_indices(employees_df)
+    # ★デバッグ: get_employee_indices 後の要素数を表示
+    print(f"DEBUG: employee_ids generated with {len(employee_ids)} elements.")
 
     # 2. AIによるルール構造化 (個人 & 施設 - 2ステップ化)
     print("\n--- Step 2: AI Rule Structuring ---")

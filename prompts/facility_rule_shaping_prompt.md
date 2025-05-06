@@ -81,6 +81,23 @@ AIは、入力された各確認用文章からこれらのパターンを認識
     *   リスト要素JSON:
         `{ "rule_type": "FORBID_SHIFT", "employee_group": "パート", "shift": "夜" }`
 
+*   **特定シフト合計回数均等化 (BALANCE_SPECIFIC_SHIFT_TOTALS):** (date_type はオプショナル、デフォルトは "ALL")
+    *   入力例: `(推奨) 全職員の夜勤、早出、明勤の期間中合計回数を、それぞれ均等にする。`
+    *   リスト要素JSON:
+        `{ "rule_type": "BALANCE_SPECIFIC_SHIFT_TOTALS", "employee_group": "ALL", "target_shifts": ["夜", "早", "明"], "weight": 1 }`
+    *   入力例: `(推奨) 正社員 の「夜」の期間中合計回数を均等化します。`
+    *   リスト要素JSON:
+        `{ "rule_type": "BALANCE_SPECIFIC_SHIFT_TOTALS", "employee_group": "正社員", "target_shifts": ["夜"], "weight": 1 }`
+    *   入力例: `(推奨) 夜勤・早出・明勤の回数はできるだけ 平等に配分 する`
+    *   リスト要素JSON:
+        `{ "rule_type": "BALANCE_SPECIFIC_SHIFT_TOTALS", "employee_group": "ALL", "target_shifts": ["夜", "早", "明"], "weight": 1 }`
+    *   入力例: `(推奨) 全職員の、祝日における公休の取得回数を、期間中に均等にする。`
+    *   リスト要素JSON:
+        `{ "rule_type": "BALANCE_SPECIFIC_SHIFT_TOTALS", "employee_group": "ALL", "target_shifts": ["公"], "date_type": "HOLIDAY", "weight": 1 }`
+    *   入力例: `(推奨) 祝日に休んでばかりの職員が出ないように配慮する`
+    *   リスト要素JSON:
+        `{ "rule_type": "BALANCE_SPECIFIC_SHIFT_TOTALS", "employee_group": "ALL", "target_shifts": ["公"], "date_type": "HOLIDAY", "weight": 1 }`
+
 *   **解釈不能 (UNPARSABLE):**
     *   入力例: `施設ルール「夜勤のあとは希望者以外は休みにしてほしい」は解釈できませんでした: 「希望者以外」という条件の指定方法が不明確なため、(必須)/(推奨)の判断が困難です。`
     *   リスト要素JSON:
@@ -88,8 +105,4 @@ AIは、入力された各確認用文章からこれらのパターンを認識
 
 ## Input Data (Example Format - Plain Text List)
 
-```text
-{intermediate_confirmation_texts}
 ```
-
-**あなたのタスクは、上記のInput Data内の各「(必須)/(推奨)付き確認用文章」を解析し、それぞれに対応する `structured_data` JSONオブジェクトを要素とする単一のJSONリスト `[...]` を出力することです。** 
