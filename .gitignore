@@ -1,0 +1,25 @@
+# 環境変数ファイル
+.env
+
+# Python のキャッシュファイル
+__pycache__/
+*.py[cod]
+*$py.class
+
+# 仮想環境フォルダ (例: venv, .venv)
+venv/
+.venv/
+
+# IDE/エディタ設定ファイル (例)
+.vscode/
+.idea/
+
+# OS固有ファイル
+.DS_Store
+Thumbs.db
+
+# ログファイル
+*.log
+
+# バックアップファイル
+*.bak

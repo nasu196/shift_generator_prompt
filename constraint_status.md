@@ -8,26 +8,21 @@
 
 | No. | ルール概要                     | テンプレート案                                                           | 実装状況 (shift_model.py) | AI実験対象? | 備考                                    |
 |-----|--------------------------------|--------------------------------------------------------------------------|---------------------------|-------------|-----------------------------------------|
-| 1   | 固定シフト (希望休/育休/病休)  | `ASSIGN(employee, date, shift)`                                          | ✅ 実装済み (制約#1, #2)     | ✅ 対象     | 希望休として入力                      |
+| 1   | 特定日付シフト指定             | `SPECIFY_DATE_SHIFT(employee, date, shift, is_hard)`                       | ✅ 一部実装済み (旧ASSIGN流用) | ✅ 対象     | `is_hard` が `true` ならハード、`false` ならソフト。希望休/病休/育休/祝日休み指定にも使用。 |
 | 2   | 禁止シフト                     | `FORBID_SHIFT(employee, shift)`                                          | ✅ 実装済み (制約#7内)      | ✅ 対象     | 「夜勤はできません」                      |
 | 3   | 許可シフト限定                 | `ALLOW_ONLY_SHIFTS(employee, allowed_shifts)`                            | ✅ 実装済み (制約#10)     | ✅ 対象     | 「日勤と早出のみ可能」                  |
 | 4   | 最大連続勤務日数               | `MAX_CONSECUTIVE_WORK(employee, max_days)`                               | ✅ 実装済み (制約#6)      | ✅ 対象     | 「連続勤務は4日まで」「最大3連勤まで」    |
 | 5   | 最小/最大 合計シフト数         | `TOTAL_SHIFT_COUNT(employee, shifts, min, max)`                          | ✅ 実装済み (制約#8, #13) | ✅ 対象     | 「必ず公休を10日以上ください」          |
 | 6   | 組み合わせNG                   | `FORBID_SIMULTANEOUS_SHIFT(employee1, employee2, shift)`                 | ✅ 実装済み (制約#9)      | ✅ 対象     | 「EMP004さんと同じ日の夜勤はNG」        |
 | 7   | 最大連続公休数                 | `MAX_CONSECUTIVE_OFF(employee, max_days)`                                | ❌ 対象外   | (今回は入力例なし)                      |
-| 8   | 土日祝休み                     | `WEEKEND_HOLIDAY_OFF(employee)`                                          | ✅ 実装済み (制約#15)     | ✅ 対象     | 「土日は休み希望」「土日祝日休み」        |
 | 9   | シフトシーケンス禁止             | `FORBID_SHIFT_SEQUENCE(employee, preceding_shift, subsequent_shift)`       | ❌ 未実装                 | ❌ 対象外   |                                         |
-| 10  | 特定日付の希望シフト(Hard)     | `ASSIGN(employee, date, shift)` (制約#1と同じ)                         | ✅ 実装済み (制約#7内)      | ✅ 対象     | 「5/5に早出希望」 (夜勤以外)            |
+| 10  | シフトシーケンス強制             | `ENFORCE_SHIFT_SEQUENCE(employee, preceding_shift, subsequent_shift)`      | ❌ 未実装                 | ❌ 対象外   | 例: 夜勤の翌日は必ず明け                  |
 
 ### ソフト制約 (できるだけ守る)
 
 | No. | ルール概要                     | テンプレート案                                                           | 実装状況 (shift_model.py) | AI実験対象? | 備考                                    |
 |-----|--------------------------------|--------------------------------------------------------------------------|---------------------------|-------------|-----------------------------------------|
 | 1   | 曜日希望                       | `PREFER_WEEKDAY_SHIFT(employee, weekday, shift, weight)`                 | ✅ 実装済み (制約#11)     | ❌ 対象外   | (今回は入力例なし)                      |
-| 2   | 特定パート合計公休日数目標       | `TARGET_TOTAL_OFF_DAYS(employee, target_count, weight)`                  | ✅ 実装済み (制約#17)     | ❌ 対象外   | (今回は入力例なし)                      |
-| 3   | カレンダー勤務 (A/Bさん)       | `PREFER_CALENDAR_SCHEDULE(employee, weight)`                             | ✅ 実装済み (制約#12)     | ❌ 対象外   | (今回はA/Bは入力なし)                 |
-| 4   | 特定日付の希望シフト(Soft)     | `PREFER_DATE_SHIFT(employee, date, shift, weight)`                       | ✅ 実装済み (制約#7内)      | ❌ 対象外   | (夜勤希望はソフトだが入力例なし)        |
-| 5   | シフトシーケンス強制             | `PREFER_SHIFT_SEQUENCE(employee, preceding_shift, subsequent_shift, weight)` | ❌ 未実装                 | ❌ 対象外   |                                         |
 
 ## 施設全体ルール
 

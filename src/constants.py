@@ -7,6 +7,10 @@ PAST_SHIFT_FILE = "input/past_shifts.csv"
 RULES_FILE = "input/rules.csv"
 OUTPUT_DIR = "results"
 
+# --- AI関連 ---
+AI_PROMPT_FILE = "prompts/rule_shaping_prompt.md"
+AI_MODEL_NAME = "gemini-2.0-flash" # 再度 2.0 Flash を試す
+
 # --- 期間設定 ---
 START_DATE = date(2025, 4, 10)
 NUM_WEEKS = 4
