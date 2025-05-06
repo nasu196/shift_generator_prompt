@@ -9,9 +9,13 @@ FACILITY_RULES_FILE = "input/facility_rules.txt" # 施設ルール用入力フ�
 OUTPUT_DIR = "results"
 
 # --- AI関連 ---
-AI_PROMPT_FILE = "prompts/rule_shaping_prompt.md" # 個人ルール用プロンプト
-FACILITY_AI_PROMPT_FILE = "prompts/facility_rule_shaping_prompt.md" # 施設ルール用プロンプト
-AI_MODEL_NAME = "gemini-2.5-pro-preview-03-25" # 2.5 Pro のプレビュー版を試す
+# AI_PROMPT_FILE = "prompts/rule_shaping_prompt.md" # 古い個人ルール用プロンプト (コメントアウト)
+PERSONAL_INTERMEDIATE_PROMPT_FILE = "prompts/personal_rule_intermediate_translation_prompt.md" # 個人ルール用 (ステップ1: 中間翻訳)
+PERSONAL_STRUCTURED_DATA_PROMPT_FILE = "prompts/rule_shaping_prompt.md" # 個人ルール用 (ステップ2: structured_data生成)
+# FACILITY_AI_PROMPT_FILE = "prompts/facility_rule_shaping_prompt.md" # 古い施設ルール用プロンプト (コメントアウト)
+FACILITY_INTERMEDIATE_PROMPT_FILE = "prompts/facility_rule_intermediate_translation_prompt.md" # 施設ルール用 (ステップ1: 中間翻訳)
+FACILITY_STRUCTURED_DATA_PROMPT_FILE = "prompts/facility_rule_shaping_prompt.md" # 施設ルール用 (ステップ2: structured_data生成)
+AI_MODEL_NAME = 'gemini-2.0-flash' # テストに合わせて変更
 
 # --- 期間設定 ---
 START_DATE = date(2025, 4, 10)
