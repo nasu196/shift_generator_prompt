@@ -6,6 +6,7 @@ import google.generativeai as genai
 import os
 import json
 from dotenv import load_dotenv
+import re
 
 # src ディレクトリを Python パスに追加 (環境によっては不要な場合もある)
 # import os
@@ -15,14 +16,15 @@ from src.constants import (
     EMPLOYEE_INFO_FILE, PAST_SHIFT_FILE, OUTPUT_DIR,
     START_DATE, END_DATE,
     # AI関連の定数を追加 (必要なら)
-    AI_PROMPT_FILE, AI_MODEL_NAME
+    AI_PROMPT_FILE, AI_MODEL_NAME,
+    FACILITY_AI_PROMPT_FILE
 )
-from src.data_loader import load_employee_data, load_past_shifts, load_natural_language_rules
+from src.data_loader import load_employee_data, load_past_shifts, load_natural_language_rules, load_facility_rules
 from src.utils import get_date_range, get_holidays, get_employee_indices
 from src.shift_model import build_shift_model
 from src.solver import solve_shift_model
 from src.output_processor import create_shift_dataframe, process_solver_results, save_shift_to_csv
-from src.rule_parser import parse_structured_rules_from_ai
+from src.rule_parser import parse_structured_rules_from_ai, parse_facility_rules_from_ai
 
 # --- AI 関連処理 (ai_rule_experiment.py から移植・統合) ---
 
@@ -63,64 +65,131 @@ def format_rules_for_prompt(rules_dict: dict) -> str:
         lines.append(f"{emp_id},\"{escaped_rule_text}\"")
     return "\n".join(lines)
 
-def call_ai_to_structure_rules(natural_language_rules: dict, prompt_template: str, target_year: int) -> dict | None:
-    """自然言語ルールをAIに渡し、構造化されたJSON(辞書)を返す (対象年を再度追加)"""
+def call_ai_to_structure_personal_rules(natural_language_rules: dict, prompt_template: str, target_year: int) -> dict | None:
+    """個人ルールをAIに渡し、構造化されたJSON(辞書)を返す"""
     if not api_key:
-        print("AI処理スキップ: APIキーが設定されていません。")
+        print("AI処理スキップ(個人): APIキーが設定されていません。")
         return None
     if not prompt_template:
-        print("AI処理スキップ: プロンプトテンプレートが読み込めませんでした。")
+        print("AI処理スキップ(個人): プロンプトテンプレートが読み込めませんでした。")
         return None
     if not natural_language_rules:
-        print("AI処理スキップ: 入力ルールが空です。")
+        print("AI処理スキップ(個人): 入力ルールが空です。")
         return {}
 
-    # ログ表示を修正
-    print(f"Calling AI to structure rules (Target Year: {target_year})...")
+    print(f"Calling AI to structure personal rules (Target Year: {target_year})...")
     input_rules_text = format_rules_for_prompt(natural_language_rules)
+    try:
+        final_prompt = prompt_template.format(input_csv_data=input_rules_text, target_year=target_year)
+    except KeyError as e:
+        print(f"エラー(個人): プロンプトのフォーマット中にキーエラー: '{e}' が見つかりません。プロンプトファイルを確認してください。")
+        return None
+    except Exception as e:
+        print(f"エラー(個人): プロンプトのフォーマット中にエラーが発生しました: {e}")
+        return None
+    try:
+        model = genai.GenerativeModel(AI_MODEL_NAME)
+        response = model.generate_content(final_prompt)
+        response_text = response.text
+        print("--- Raw AI Response (Personal) ---")
+        print(response_text)
+        json_block_start = response_text.find("```json")
+        json_block_end = response_text.rfind("```")
+        if json_block_start != -1 and json_block_end != -1 and json_block_start < json_block_end:
+            json_string = response_text[json_block_start + 7 : json_block_end].strip()
+            # --- 末尾のカンマを除去する処理を追加 ---
+            # } や ] の直前にあるカンマを削除する (複数行対応)
+            cleaned_json_string = re.sub(r'\s*,(\s*[}\]])', r'\1', json_string)
+            try:
+                parsed_json = json.loads(cleaned_json_string)
+                print("AI personal rule structuring successful.")
+                return parsed_json
+            except json.JSONDecodeError as e_parse:
+                 print(f"エラー(個人): JSONパースに失敗しました（カンマ除去後）: {e_parse}")
+                 print("--- Cleaned JSON String --- ")
+                 print(cleaned_json_string)
+                 print("--- Original JSON String --- ")
+                 print(json_string)
+                 return None
+            # --- 末尾のカンマ除去ここまで ---
+        else:
+            print("警告(個人): AI応答から ```json ブロックが見つかりませんでした。全体をパース試行します。")
+            try:
+                 parsed_json = json.loads(response_text)
+                 print("AI personal rule structuring successful (parsed whole response).")
+                 return parsed_json
+            except json.JSONDecodeError:
+                 print("エラー(個人): AI応答のJSONパースに失敗しました。")
+                 print("--- Raw AI Response (Personal) --- ")
+                 print(response_text)
+                 return None
+    except Exception as e:
+        print(f"エラー(個人): Gemini API呼び出しまたは結果処理中にエラーが発生しました: {e}")
+        return None
+
+# 施設ルール用 AI 呼び出し関数 (新規追加)
+def call_ai_to_structure_facility_rules(facility_rules_list: list[str], prompt_template: str, target_year: int) -> list | None:
+    """施設ルールリストをAIに渡し、構造化されたJSON(辞書)のリストを返す"""
+    if not api_key:
+        print("AI処理スキップ(施設): APIキーが設定されていません。")
+        return None
+    if not prompt_template:
+        print("AI処理スキップ(施設): プロンプトテンプレートが読み込めませんでした。")
+        return None
+    if not facility_rules_list:
+        print("AI処理スキップ(施設): 入力ルールが空です。")
+        return []
+
+    print(f"Calling AI to structure facility rules (Target Year: {target_year})...")
+    # プロンプトに入力ルールを埋め込む (例: 改行区切りのテキストとして)
+    input_rules_text = "\n".join(facility_rules_list)
     try:
         # target_year もフォーマットに渡す
         final_prompt = prompt_template.format(input_csv_data=input_rules_text, target_year=target_year)
-        # print("--- Final Prompt (partial) ---") # デバッグ用
-        # print(final_prompt[:500] + "...")
     except KeyError as e:
-        print(f"エラー: プロンプトのフォーマット中にキーエラー: '{e}' が見つかりません。プロンプトファイルを確認してください。")
+        print(f"エラー(施設): プロンプトのフォーマット中にキーエラー: '{e}' が見つかりません。プロンプトファイルを確認してください。")
         return None
     except Exception as e:
-        print(f"エラー: プロンプトのフォーマット中にエラーが発生しました: {e}")
+        print(f"エラー(施設): プロンプトのフォーマット中にエラーが発生しました: {e}")
         return None
 
     try:
         model = genai.GenerativeModel(AI_MODEL_NAME)
         response = model.generate_content(final_prompt)
         response_text = response.text
-        # --- AI応答の生ログを追加 ---
-        print("--- Raw AI Response ---")
+        print("--- Raw AI Response (Facility) ---")
         print(response_text)
-        # --- AI応答の生ログを追加ここまで ---
-
-        # 応答テキストからJSON部分を抽出・パース
+        # 施設ルールプロンプトは JSON リストを直接返す想定
+        # 個人ルールと同様に ```json ブロックを探すように修正
         json_block_start = response_text.find("```json")
         json_block_end = response_text.rfind("```")
         if json_block_start != -1 and json_block_end != -1 and json_block_start < json_block_end:
-            json_string = response_text[json_block_start + 7 : json_block_end].strip()
-            parsed_json = json.loads(json_string)
-            print("AI rule structuring successful.")
-            return parsed_json
+             json_string = response_text[json_block_start + 7 : json_block_end].strip()
+             parsed_json = json.loads(json_string)
+             # パース結果がリストであることを確認
+             if isinstance(parsed_json, list):
+                 print("AI facility rule structuring successful.")
+                 return parsed_json
+             else:
+                 print(f"エラー(施設): 抽出されたJSONが期待されたリスト形式ではありません (Type: {type(parsed_json)}).")
+                 return None
         else:
-            print("警告: AI応答から ```json ブロックが見つかりませんでした。全体をパース試行します。")
+            print("警告(施設): AI応答から ```json ブロックが見つかりませんでした。全体をパース試行します。")
             try:
                  parsed_json = json.loads(response_text)
-                 print("AI rule structuring successful (parsed whole response).")
-                 return parsed_json
+                 if isinstance(parsed_json, list):
+                      print("AI facility rule structuring successful (parsed whole response).")
+                      return parsed_json
+                 else:
+                      print("エラー(施設): AI応答全体が期待されたリスト形式ではありません。")
+                      return None
             except json.JSONDecodeError:
-                 print("エラー: AI応答のJSONパースに失敗しました。")
-                 print("--- Raw AI Response --- ")
+                 print("エラー(施設): AI応答全体のJSONパースに失敗しました。")
+                 print("--- Raw AI Response (Facility) --- ")
                  print(response_text)
                  return None
-
     except Exception as e:
-        print(f"エラー: Gemini API呼び出しまたは結果処理中にエラーが発生しました: {e}")
+        print(f"エラー(施設): Gemini API呼び出しまたは結果処理中にエラーが発生しました: {e}")
         return None
 
 # --- ここまで AI 関連処理 ---
@@ -133,51 +202,65 @@ def main():
     print("Loading base data...")
     employees_df = load_employee_data(EMPLOYEE_INFO_FILE)
     past_shifts_df = load_past_shifts(PAST_SHIFT_FILE, START_DATE)
-    # 自然言語ルールを読み込み (職員ID -> ルール文字列 の辞書)
+    # 個人ルールを読み込み
     natural_language_rules = load_natural_language_rules()
+    # 施設ルールを読み込み (リスト)
+    facility_rules_list = load_facility_rules()
 
     if employees_df is None:
         print("エラー: 従業員情報の読み込みに失敗しました。処理を中断します。")
         sys.exit(1)
-    if not natural_language_rules:
-         print("情報: 自然言語ルールが見つかりませんでした。AI処理はスキップされます。")
+    if not natural_language_rules: print("情報: 個人ルールが見つかりませんでした。")
+    if not facility_rules_list: print("情報: 施設ルールが見つかりませんでした。")
 
-    # target_year を再度取得
     target_year = START_DATE.year
     date_range = get_date_range(START_DATE, END_DATE)
     jp_holidays = get_holidays(START_DATE.year, END_DATE.year)
     employee_ids, emp_id_to_row_index = get_employee_indices(employees_df)
 
-    # 2. AIによるルール構造化
+    # 2. AIによるルール構造化 (個人 & 施設)
     print("\n--- Step 2: AI Rule Structuring ---")
-    ai_structured_rules_dict = None
-    # プロンプトテンプレートを読み込む (エスケープ処理は削除)
-    prompt_template = load_prompt(AI_PROMPT_FILE)
-    if api_key and prompt_template and natural_language_rules:
-        # AI呼び出しを実行 (対象年を再度渡す)
-        ai_structured_rules_dict = call_ai_to_structure_rules(natural_language_rules, prompt_template, target_year)
-    else:
-        print("Skipping AI rule structuring due to missing API key, prompt, or rules.")
+    ai_personal_rules_dict = None
+    ai_facility_rules_list = None
 
-    # 3. ルールパーサーの実行 (START_DATE, END_DATE を渡す)
+    # 個人ルールAI処理
+    personal_prompt_template = load_prompt(AI_PROMPT_FILE)
+    if api_key and personal_prompt_template and natural_language_rules:
+        ai_personal_rules_dict = call_ai_to_structure_personal_rules(natural_language_rules, personal_prompt_template, target_year)
+    else:
+        print("Skipping AI personal rule structuring.")
+
+    # 施設ルールAI処理
+    facility_prompt_template = load_prompt(FACILITY_AI_PROMPT_FILE)
+    if api_key and facility_prompt_template and facility_rules_list:
+         ai_facility_rules_list = call_ai_to_structure_facility_rules(facility_rules_list, facility_prompt_template, target_year)
+    else:
+         print("Skipping AI facility rule structuring.")
+
+    # 3. ルールパーサーの実行 (個人 & 施設)
     print("\n--- Step 3: Rule Parsing ---")
-    structured_rules = [] # パース結果を格納するリスト
-    if ai_structured_rules_dict is not None:
-        structured_rules = parse_structured_rules_from_ai(ai_structured_rules_dict, START_DATE, END_DATE)
-        # メッセージは変更
-        # print(f"Successfully parsed {len(structured_rules)} rules from AI output.")
-    else:
-        print("Skipping rule parsing as AI structuring was skipped or failed.")
-        # AI処理がない場合、ここにデフォルトルールや他のルールソースからの処理を追加することも可能
+    personal_structured_rules = []
+    facility_structured_rules = []
 
-    # 4. OR-Toolsモデルの構築 (パース済み構造化ルールを使用)
+    if ai_personal_rules_dict is not None:
+        personal_structured_rules = parse_structured_rules_from_ai(ai_personal_rules_dict, START_DATE, END_DATE)
+    else:
+        print("Skipping personal rule parsing.")
+
+    if ai_facility_rules_list is not None:
+         facility_structured_rules = parse_facility_rules_from_ai(ai_facility_rules_list, START_DATE, END_DATE)
+    else:
+         print("Skipping facility rule parsing.")
+
+    # 4. OR-Toolsモデルの構築 (個人 & 施設ルールを使用)
     print("\n--- Step 4: Building OR-Tools Model ---")
     model, shifts_vars, employee_ids_from_model, date_range_from_model = build_shift_model(
         employees_df=employees_df,
         past_shifts_df=past_shifts_df,
         date_range=date_range,
         jp_holidays=jp_holidays,
-        structured_rules=structured_rules # パース結果を渡す
+        personal_rules=personal_structured_rules, # 引数名を変更
+        facility_rules=facility_structured_rules # 引数を追加
     )
 
     # 5. ソルバーの実行

@@ -176,12 +176,18 @@ def validate_and_transform_rule(rule_data, start_date, end_date):
         sub_shift = rule_data.get('subsequent_shift')
         if not is_valid_shift(pre_shift) or not is_valid_shift(sub_shift):
             return {'rule_type': 'INVALID', 'reason': f"Invalid shift symbols for {rule_type}: {pre_shift} -> {sub_shift}"}
+        # is_hard の検証を追加 (オプショナル)
+        if 'is_hard' in rule_data and not isinstance(rule_data['is_hard'], bool):
+             return {'rule_type': 'INVALID', 'reason': f"is_hard must be a boolean for {rule_type}"}
 
     elif rule_type == 'ENFORCE_SHIFT_SEQUENCE':
         pre_shift = rule_data.get('preceding_shift')
         sub_shift = rule_data.get('subsequent_shift')
         if not is_valid_shift(pre_shift) or not is_valid_shift(sub_shift):
             return {'rule_type': 'INVALID', 'reason': f"Invalid shift symbols for {rule_type}: {pre_shift} -> {sub_shift}"}
+        # is_hard の検証を追加 (オプショナル)
+        if 'is_hard' in rule_data and not isinstance(rule_data['is_hard'], bool):
+             return {'rule_type': 'INVALID', 'reason': f"is_hard must be a boolean for {rule_type}"}
 
     # PREFER_CALENDAR_SCHEDULE は削除されたので検証不要
     # MAX_CONSECUTIVE_OFF も現在AI解釈対象外なので検証不要
@@ -233,4 +239,169 @@ def parse_structured_rules_from_ai(ai_output_dict, start_date, end_date):
 
 # --- 古い関数は削除 ---
 # def parse_shaped_rule(...):
-# def parse_shaped_rules(...): 
+# def parse_shaped_rules(...):
+
+
+# --- 施設全体ルール用 --- 
+
+# 施設ルールで使われる可能性のあるパラメータ (検証用)
+VALID_DATE_TYPES = {"平日", "休日", "祝日", "土日", "土日祝", "ALL"}
+VALID_EMPLOYEE_GROUPS = {"ALL", "常勤", "パート"} # 必要に応じて役職名なども追加
+VALID_FLOORS = {"1F", "2F", "ALL"} # constants.py から取る方が良いかも
+
+
+def validate_facility_rule(rule_data, start_date, end_date):
+    """
+    単一の構造化された施設ルールデータ(辞書)を検証し、必要なら変換する。
+    無効な場合は rule_type を 'INVALID' にして返す。
+    """
+    if not isinstance(rule_data, dict):
+        return {'rule_type': 'INVALID', 'reason': 'Facility rule data is not a dictionary.'}
+
+    rule_type = rule_data.get('rule_type')
+    if rule_type == 'UNPARSABLE':
+        return rule_data
+    if not rule_type:
+        return {'rule_type': 'INVALID', 'reason': 'Missing rule_type for facility rule.'}
+
+    # is_hard があればブール型かチェック
+    if 'is_hard' in rule_data and not isinstance(rule_data['is_hard'], bool):
+         return {'rule_type': 'INVALID', 'reason': f'is_hard must be a boolean for {rule_type}.'}
+
+    # シフト記号の検証関数 (再利用)
+    def is_valid_shift(shift):
+        return isinstance(shift, str) and shift in VALID_SHIFT_SYMBOLS
+
+    # 日付タイプの検証関数
+    def is_valid_date_type(dtype):
+        if isinstance(dtype, str):
+            if dtype in VALID_DATE_TYPES:
+                return True
+            # YYYY-MM-DD形式かチェック (特定日指定)
+            try:
+                 date.fromisoformat(dtype)
+                 return True
+            except ValueError:
+                 return False
+        return False
+
+    # 従業員グループの検証関数
+    def is_valid_employee_group(group):
+        # ここでは基本的な検証のみ。役職名など動的なものはshift_model側で検証する方が良いかも
+        return isinstance(group, str) and (group in VALID_EMPLOYEE_GROUPS or group == 'ALL')
+
+    # --- ルールタイプごとの検証 --- 
+    if rule_type == 'REQUIRED_STAFFING':
+        floor = rule_data.get('floor', 'ALL') # デフォルト ALL
+        shift = rule_data.get('shift')
+        date_type = rule_data.get('date_type')
+        min_count = rule_data.get('min_count')
+        if not isinstance(floor, str) or floor not in VALID_FLOORS:
+            return {'rule_type': 'INVALID', 'reason': f"Invalid floor for {rule_type}: {floor}"}
+        if not is_valid_shift(shift):
+             return {'rule_type': 'INVALID', 'reason': f"Invalid shift for {rule_type}: {shift}"}
+        if not is_valid_date_type(date_type):
+            return {'rule_type': 'INVALID', 'reason': f"Invalid date_type for {rule_type}: {date_type}"}
+        if not isinstance(min_count, int) or min_count < 0:
+            return {'rule_type': 'INVALID', 'reason': f"Invalid min_count for {rule_type}: {min_count}"}
+        # is_hard は共通部分でチェック済み
+
+    elif rule_type == 'MIN_ROLE_ON_DUTY':
+        role = rule_data.get('role')
+        min_count = rule_data.get('min_count')
+        date_type = rule_data.get('date_type')
+        # 役職名は employees.csv に依存するので、ここでは文字列であることのみチェック
+        if not isinstance(role, str) or not role:
+            return {'rule_type': 'INVALID', 'reason': f"Invalid role for {rule_type}: {role}"}
+        if not isinstance(min_count, int) or min_count < 0:
+            return {'rule_type': 'INVALID', 'reason': f"Invalid min_count for {rule_type}: {min_count}"}
+        if not is_valid_date_type(date_type):
+            return {'rule_type': 'INVALID', 'reason': f"Invalid date_type for {rule_type}: {date_type}"}
+        # is_hard は共通部分でチェック済み
+
+    elif rule_type == 'MAX_CONSECUTIVE_OFF':
+        # 個人ルールとパラメータが同じなので、共通部分 + グループ検証
+        group = rule_data.get('employee_group', 'ALL') # デフォルト ALL
+        max_days = rule_data.get('max_days')
+        if not is_valid_employee_group(group):
+            return {'rule_type': 'INVALID', 'reason': f"Invalid employee_group for {rule_type}: {group}"}
+        if not isinstance(max_days, int) or max_days <= 0:
+             return {'rule_type': 'INVALID', 'reason': f"Invalid max_days for {rule_type}: {max_days}"}
+        # is_hard は共通部分でチェック済み
+
+    elif rule_type == 'BALANCE_OFF_DAYS':
+        group = rule_data.get('employee_group', 'ALL')
+        weight = rule_data.get('weight')
+        if not is_valid_employee_group(group):
+             return {'rule_type': 'INVALID', 'reason': f"Invalid employee_group for {rule_type}: {group}"}
+        if weight is not None and not isinstance(weight, (int, float)):
+             return {'rule_type': 'INVALID', 'reason': f"Invalid weight for {rule_type}: {weight}"}
+
+    elif rule_type == 'FORBID_SHIFT': # 施設向け禁止シフト
+        group = rule_data.get('employee_group', 'ALL')
+        shift = rule_data.get('shift')
+        if not is_valid_employee_group(group):
+             return {'rule_type': 'INVALID', 'reason': f"Invalid employee_group for {rule_type}: {group}"}
+        if not is_valid_shift(shift):
+            return {'rule_type': 'INVALID', 'reason': f"Invalid shift symbol for {rule_type}: {shift}"}
+
+    elif rule_type == 'FORBID_SHIFT_SEQUENCE':
+        group = rule_data.get('employee_group', 'ALL')
+        pre_shift = rule_data.get('preceding_shift')
+        sub_shift = rule_data.get('subsequent_shift')
+        if not is_valid_employee_group(group):
+            return {'rule_type': 'INVALID', 'reason': f"Invalid employee_group for {rule_type}: {group}"}
+        if not is_valid_shift(pre_shift) or not is_valid_shift(sub_shift):
+            return {'rule_type': 'INVALID', 'reason': f"Invalid shift symbols for {rule_type}: {pre_shift} -> {sub_shift}"}
+        # is_hard の検証を追加 (オプショナル)
+        if 'is_hard' in rule_data and not isinstance(rule_data['is_hard'], bool):
+             return {'rule_type': 'INVALID', 'reason': f"is_hard must be a boolean for {rule_type}"}
+
+    elif rule_type == 'ENFORCE_SHIFT_SEQUENCE':
+        group = rule_data.get('employee_group', 'ALL')
+        pre_shift = rule_data.get('preceding_shift')
+        sub_shift = rule_data.get('subsequent_shift')
+        if not is_valid_employee_group(group):
+            return {'rule_type': 'INVALID', 'reason': f"Invalid employee_group for {rule_type}: {group}"}
+        if not is_valid_shift(pre_shift) or not is_valid_shift(sub_shift):
+            return {'rule_type': 'INVALID', 'reason': f"Invalid shift symbols for {rule_type}: {pre_shift} -> {sub_shift}"}
+        # is_hard の検証を追加 (オプショナル)
+        if 'is_hard' in rule_data and not isinstance(rule_data['is_hard'], bool):
+             return {'rule_type': 'INVALID', 'reason': f"is_hard must be a boolean for {rule_type}"}
+
+    else:
+        return {'rule_type': 'INVALID', 'reason': f"Unknown facility rule_type: {rule_type}"}
+
+    return rule_data
+
+def parse_facility_rules_from_ai(ai_output_list, start_date, end_date):
+    """
+    AIが出力した施設ルールリスト(辞書リスト)を解析し、
+    検証済みの構造化ルールデータ(辞書)のリストを返す。
+    """
+    all_facility_rules = []
+    if not isinstance(ai_output_list, list):
+        print("エラー(施設パーサー): AI出力がリスト形式ではありません。")
+        return all_facility_rules
+
+    for rule_object in ai_output_list:
+        if isinstance(rule_object, dict) and 'structured_data' in rule_object:
+            structured_data = rule_object['structured_data']
+            # 検証 (施設ルール用バリデーターを使用)
+            validated_rule = validate_facility_rule(structured_data, start_date, end_date)
+            if validated_rule.get('rule_type') == 'INVALID':
+                print(f"警告(施設パーサー): 無効なルールデータをスキップ: {validated_rule.get('reason')} - Original: {structured_data}")
+            elif validated_rule.get('rule_type') == 'UNPARSABLE':
+                 print(f"情報(施設パーサー): AIが解釈不能としたルール: {validated_rule}")
+                 all_facility_rules.append(validated_rule)
+            else: # VALID
+                print(f"情報(施設パーサー): 有効な施設ルールを追加: {validated_rule}")
+                all_facility_rules.append(validated_rule)
+        else:
+            print(f"警告(施設パーサー): 不正なルールオブジェクト形式: {rule_object}")
+
+    valid_rule_count = sum(1 for r in all_facility_rules if r.get('rule_type') not in ['INVALID', 'UNPARSABLE'])
+    unparsable_count = sum(1 for r in all_facility_rules if r.get('rule_type') == 'UNPARSABLE')
+    print(f"{valid_rule_count} valid facility rules and {unparsable_count} unparsable facility rules extracted.")
+
+    return all_facility_rules 

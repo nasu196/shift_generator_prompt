@@ -9,10 +9,10 @@ from src.constants import (
     START_DATE,
     WORK_SYMBOLS # 応援変数定義で必要
 )
-from src.utils import get_employee_info # 役職や制約取得に使う
+from src.utils import get_employee_info, get_employees_by_group # 役職や制約取得に使う
 
-def build_shift_model(employees_df, past_shifts_df, date_range, jp_holidays, structured_rules):
-    """OR-Tools CP-SATモデルを構築し、制約を追加する (構造化ルール入力版)"""
+def build_shift_model(employees_df, past_shifts_df, date_range, jp_holidays, personal_rules, facility_rules):
+    """OR-Tools CP-SATモデルを構築し、制約を追加する (個人ルール+施設ルール入力版)"""
     model = cp_model.CpModel()
     print("Shift model building started...")
 
@@ -57,53 +57,50 @@ def build_shift_model(employees_df, past_shifts_df, date_range, jp_holidays, str
     print("Help variables defined.")
 
     # --- 制約追加 ---
-    print("Adding constraints from structured rules...")
+    print("Adding constraints...")
 
     # ペナルティリストの初期化
     ab_schedule_penalties = []
     weekday_penalties = []
     night_preference_penalties = []
     ake_count_deviation_penalties = []
-    max_consecutive_work_penalties = [] # 追加済み
-    max_consecutive_off_penalties = [] # 追加済み
-    total_shift_count_penalties = [] # 新しいペナルティリスト
+    max_consecutive_work_penalties = []
+    max_consecutive_off_penalties = []
+    total_shift_count_penalties = []
+    balance_off_days_penalties = []
+    total_staffing_penalties = [] # 人員配置不足ペナルティ
+    min_role_penalties = [] # 役割最低出勤不足ペナルティ
+    forbid_sequence_penalties = [] # 新しいペナルティリスト
+    enforce_sequence_penalties = [] # 新しいペナルティリスト
     off_days_difference = None # 均等化用
     full_time_employee_indices = [] # 均等化用
     num_off_days_vars = {} # 均等化用
 
-    # <<< 構造化ルールリストを処理して制約を追加 >>>
-    processed_rule_types = set() # 複数回適用を防ぐため（連勤など）
-    employee_specific_rules = {e_idx: [] for e_idx in all_employees} # 従業員ごとのルール
-
-    for rule in structured_rules:
-        employee_id = rule.get('employee') # Primary employee ID
-        employee1_id = rule.get('employee1') # Secondary for rules like FORBID_SIMULTANEOUS_SHIFT
-
+    # <<< 個人ルールの処理 >>>
+    print("Processing personal rules...")
+    processed_rule_types = set()
+    employee_specific_rules = {e_idx: [] for e_idx in all_employees}
+    for rule in personal_rules:
+        employee_id = rule.get('employee')
+        employee1_id = rule.get('employee1')
         primary_e_idx = emp_id_to_idx.get(employee_id)
         employee1_idx = emp_id_to_idx.get(employee1_id)
-
         assign_to_idx = None
-        if primary_e_idx is not None:
-            # 'employee' が存在し、有効な場合
-            assign_to_idx = primary_e_idx
-        elif employee1_idx is not None:
-            # 'employee' がなく 'employee1' が存在する場合
-            # (組み合わせNGルールなどは employee1 に紐づけて処理する)
-            assign_to_idx = employee1_idx
-        # 他にも employee キーを持たないルールタイプがあれば、ここでハンドリングを追加
-
+        if primary_e_idx is not None: assign_to_idx = primary_e_idx
+        elif employee1_idx is not None: assign_to_idx = employee1_idx
         if assign_to_idx is not None:
              employee_specific_rules[assign_to_idx].append(rule)
         else:
-            # どちらのIDも見つからないか、関連付けられないルール
             invalid_id_info = f"employee='{employee_id}' or employee1='{employee1_id}'"
-            print(f"警告: ルール内の従業員ID ({invalid_id_info}) が見つからないか、ルールを関連付けられません。ルールをスキップ: {rule}")
+            print(f"警告(個人): ルール内の従業員ID ({invalid_id_info}) が見つからないか、ルールを関連付けられません。ルールをスキップ: {rule}")
             continue
 
     for e_idx in all_employees:
         emp_id = employee_ids[e_idx]
         emp_info = get_employee_info(employees_df, emp_id)
-        if emp_info is None: continue
+        if emp_info is None:
+            print(f"警告(個人モデル): 従業員情報が見つかりません: {emp_id}")
+            continue
 
         # --- 従業員ごとのルールを適用 ---
         for rule in employee_specific_rules[e_idx]:
@@ -306,273 +303,157 @@ def build_shift_model(employees_df, past_shifts_df, date_range, jp_holidays, str
                      print(f"警告(モデル): 無効または重複する TOTAL_SHIFT_COUNT ルール: {rule}")
 
             elif rule_type == 'MAX_CONSECUTIVE_OFF':
+                # グループ指定の最大連休 (個人ルール実装を流用 -> 直接実装に変更)
+                group_name = rule.get('employee_group', 'ALL')
                 max_off_days = rule.get('max_days')
-                is_hard = rule.get('is_hard', True) # is_hard がなければ True (ハード) とする
-                rule_key = f'max_off_{e_idx}'
+                is_hard = rule.get('is_hard', True)
+                target_employee_indices = get_employees_by_group(employees_df, group_name, emp_id_to_idx)
+                rule_key_facility = f"max_off_fac_{group_name}_{max_off_days}_{is_hard}"
 
-                if not (isinstance(max_off_days, int) and max_off_days >= 0 and isinstance(is_hard, bool)):
-                    print(f"警告(モデル): 無効なパラメータを持つ MAX_CONSECUTIVE_OFF ルールをスキップ: {rule}")
-                    continue
-
-                if rule_key not in processed_rule_types:
-                    # (is_off 変数定義、initial_consecutive_off 計算は変更なし)
-                    is_off = [model.NewBoolVar(f'is_off_r_maxoff_e{e_idx}_d{d_idx}') for d_idx in all_days]
-                    off_tuples = [(off_int,) for off_int in OFF_SHIFT_INTS]
-                    for d_idx in all_days:
-                        model.AddAllowedAssignments((shifts[(e_idx, d_idx)],), off_tuples).OnlyEnforceIf(is_off[d_idx])
-                        model.AddForbiddenAssignments((shifts[(e_idx, d_idx)],), off_tuples).OnlyEnforceIf(is_off[d_idx].Not())
-                    initial_consecutive_off = 0
-                    if past_shifts_lookup is not None and emp_id in past_shifts_lookup.index:
-                         for i in range(1, max_off_days + 2):
-                            past_date_str = (START_DATE - timedelta(days=i)).strftime('%#m/%#d')
-                            if past_date_str in past_shifts_lookup.columns:
-                                past_shift = past_shifts_lookup.loc[emp_id, past_date_str]
-                                if past_shift and past_shift in SHIFT_MAP_INT and SHIFT_MAP_INT[past_shift] in OFF_SHIFT_INTS:
-                                    initial_consecutive_off += 1
-                                else: break
-                            else: break
-
-                    window_size = max_off_days + 1
-                    for d_start in range(-initial_consecutive_off, num_days - max_off_days):
-                        vars_in_window = []
-                        for d_offset in range(window_size):
-                            d_current = d_start + d_offset
-                            if d_current < 0: continue
-                            if d_current >= num_days: break
-                            vars_in_window.append(is_off[d_current])
-
-                        window_sum_expr = cp_model.LinearExpr.Sum(vars_in_window)
-                        effective_max_off_days = max_off_days
-                        if d_start < 0:
-                            effective_window_size = window_size + d_start
-                            if effective_window_size <= 0: continue
-                            effective_max_off_days = max(0, effective_window_size - 1)
-
-                        if is_hard:
-                            # ハード制約: ウィンドウ内の公休日数が上限以下
-                            if effective_max_off_days < max_off_days:
-                                model.Add(window_sum_expr <= effective_max_off_days)
-                            else:
-                                model.Add(window_sum_expr <= max_off_days)
-                        else:
-                            # ソフト制約: 上限を超えた場合にペナルティ
-                            max_possible_excess = window_size
-                            excess_var = model.NewIntVar(0, max_possible_excess, f'max_off_excess_e{e_idx}_d{d_start}')
-                            model.Add(window_sum_expr - effective_max_off_days <= excess_var)
-                            max_consecutive_off_penalties.append(excess_var)
-
-                    processed_rule_types.add(rule_key)
-                else:
-                    print(f"警告(モデル): 無効または重複する MAX_CONSECUTIVE_OFF ルール: {rule}")
-
-            elif rule_type == 'FORBID_SHIFT_SEQUENCE':
-                pre_shift_sym = rule.get('preceding_shift')
-                sub_shift_sym = rule.get('subsequent_shift')
-                rule_key = f"forbid_seq_{e_idx}_{pre_shift_sym}_{sub_shift_sym}"
-                if pre_shift_sym in SHIFT_MAP_INT and sub_shift_sym in SHIFT_MAP_INT and rule_key not in processed_rule_types:
-                    pre_shift_int = SHIFT_MAP_INT[pre_shift_sym]
-                    sub_shift_int = SHIFT_MAP_INT[sub_shift_sym]
-                    for d_idx in range(num_days - 1): # 最終日は翌日がないので除外
-                        # d日目が先行シフト かつ d+1日目が後続シフト、という組み合わせを禁止
-                        b1 = model.NewBoolVar(f'is_pre_fseq_e{e_idx}_d{d_idx}')
-                        b2 = model.NewBoolVar(f'is_sub_fseq_e{e_idx}_d{d_idx+1}')
-                        model.Add(shifts[(e_idx, d_idx)] == pre_shift_int).OnlyEnforceIf(b1)
-                        model.Add(shifts[(e_idx, d_idx)] != pre_shift_int).OnlyEnforceIf(b1.Not())
-                        model.Add(shifts[(e_idx, d_idx + 1)] == sub_shift_int).OnlyEnforceIf(b2)
-                        model.Add(shifts[(e_idx, d_idx + 1)] != sub_shift_int).OnlyEnforceIf(b2.Not())
-                        # b1 と b2 が両方 True になることを禁止 (Or を使う)
-                        model.AddBoolOr([b1.Not(), b2.Not()])
-                    processed_rule_types.add(rule_key)
-                else:
-                     print(f"警告(モデル): 無効または重複する FORBID_SHIFT_SEQUENCE ルール: {rule}")
-
-            # PREFER_SHIFT_SEQUENCE のロジックを削除し、ENFORCE_SHIFT_SEQUENCE のハード制約を実装
-            elif rule_type == 'ENFORCE_SHIFT_SEQUENCE':
-                pre_shift_sym = rule.get('preceding_shift')
-                sub_shift_sym = rule.get('subsequent_shift')
-                rule_key = f"enforce_seq_{e_idx}_{pre_shift_sym}_{sub_shift_sym}"
-                if pre_shift_sym in SHIFT_MAP_INT and sub_shift_sym in SHIFT_MAP_INT and rule_key not in processed_rule_types:
-                    pre_shift_int = SHIFT_MAP_INT[pre_shift_sym]
-                    sub_shift_int = SHIFT_MAP_INT[sub_shift_sym]
-                    for d_idx in range(num_days - 1):
-                        # d日目が先行シフトならば、d+1日目は後続シフトでなければならない
-                        b_pre = model.NewBoolVar(f'is_pre_eseq_e{e_idx}_d{d_idx}')
-                        model.Add(shifts[(e_idx, d_idx)] == pre_shift_int).OnlyEnforceIf(b_pre)
-                        model.Add(shifts[(e_idx, d_idx)] != pre_shift_int).OnlyEnforceIf(b_pre.Not())
-                        # b_pre が True ならば、shifts[(e_idx, d_idx + 1)] == sub_shift_int が強制される
-                        model.Add(shifts[(e_idx, d_idx + 1)] == sub_shift_int).OnlyEnforceIf(b_pre)
-                    processed_rule_types.add(rule_key)
-                else:
-                    print(f"警告(モデル): 無効または重複する ENFORCE_SHIFT_SEQUENCE ルール: {rule}")
-
-            # --- ソフト制約の処理 (structured_rules ベースに修正) ---
-            elif rule_type == 'PREFER_WEEKDAY_SHIFT':
-                 weekday = rule.get('weekday')
-                 shift_sym = rule.get('shift')
-                 weight = rule.get('weight', 1) # ソフト制約時のデフォルトウェイト
-                 is_hard = rule.get('is_hard', False) # デフォルトは False (ソフト)
-
-                 # パラメータ検証 (念のため)
-                 if not (weekday is not None and 0 <= weekday <= 6 and shift_sym in SHIFT_MAP_INT and isinstance(is_hard, bool)):
-                     print(f"警告(モデル): 無効なパラメータを持つ PREFER_WEEKDAY_SHIFT ルールをスキップ: {rule}")
+                # target_employee_indices が空の場合の警告を追加
+                if not target_employee_indices:
+                     print(f"警告(施設モデル): MAX_CONSECUTIVE_OFF の対象グループ '{group_name}' が見つかりません。ルールスキップ: {rule}")
                      continue
 
-                 shift_int = SHIFT_MAP_INT[shift_sym]
-                 for d_idx in all_days:
-                     if date_range[d_idx].weekday() == weekday:
-                         if is_hard:
-                             # ハード制約: 特定曜日は必ず指定シフト
-                             model.Add(shifts[(e_idx, d_idx)] == shift_int)
-                         else:
-                             # ソフト制約: 希望通りでない場合にペナルティ
-                             penalty_var = model.NewBoolVar(f'weekday_penalty_e{e_idx}_d{d_idx}_w{weekday}')
-                             # 重みを考慮 (weightがNoneの場合や型不正は考慮が必要だが、パーサーで弾かれる想定)
-                             penalty_value = int(round(weight * 100)) if isinstance(weight, (int, float)) else 100 # デフォルト重み*100
-                             weekday_penalties.append(penalty_var * penalty_value)
-                             model.Add(shifts[(e_idx, d_idx)] != shift_int).OnlyEnforceIf(penalty_var)
-                             model.Add(shifts[(e_idx, d_idx)] == shift_int).OnlyEnforceIf(penalty_var.Not())
+                if isinstance(max_off_days, int) and max_off_days >= 0 and isinstance(is_hard, bool) and rule_key_facility not in processed_facility_rules:
+                    print(f"DEBUG (Facility MAX_CONSECUTIVE_OFF): Applying to group '{group_name}' (indices: {target_employee_indices}) with max_days={max_off_days}, is_hard={is_hard}")
+                    for e_idx in target_employee_indices:
+                        rule_key_emp = f'max_off_{e_idx}'
+                        if rule_key_emp in processed_rule_types: continue # 個人ルール優先
+                        
+                        # --- add_max_consecutive_off_constraint のロジックをここに展開 ---
+                        is_off = [model.NewBoolVar(f'is_off_r_maxoff_fac_e{e_idx}_d{d_idx}') for d_idx in all_days]
+                        off_tuples = [(off_int,) for off_int in OFF_SHIFT_INTS]
+                        for d_idx in all_days:
+                            model.AddAllowedAssignments((shifts[(e_idx, d_idx)],), off_tuples).OnlyEnforceIf(is_off[d_idx])
+                            model.AddForbiddenAssignments((shifts[(e_idx, d_idx)],), off_tuples).OnlyEnforceIf(is_off[d_idx].Not())
 
-            elif rule_type == 'UNKNOWN_FORMAT' or rule_type == 'PARSE_ERROR' or rule_type == 'UNPARSABLE':
-                 print(f"情報(モデル): 処理できないルール: {rule}")
-            # else: print(f"情報(モデル): 未対応のルールタイプ: {rule_type}") # Unknownはパーサーで弾かれるはず
+                        initial_consecutive_off = 0
+                        emp_id = emp_idx_to_id.get(e_idx) # emp_id を取得
+                        if past_shifts_lookup is not None and emp_id is not None and emp_id in past_shifts_lookup.index:
+                            for i in range(1, max_off_days + 2):
+                                past_date_str = (START_DATE - timedelta(days=i)).strftime('%#m/%#d')
+                                if past_date_str in past_shifts_lookup.columns:
+                                    past_shift = past_shifts_lookup.loc[emp_id, past_date_str]
+                                    if past_shift and past_shift in SHIFT_MAP_INT and SHIFT_MAP_INT[past_shift] in OFF_SHIFT_INTS:
+                                        initial_consecutive_off += 1
+                                    else: break
+                                else: break
 
-    # <<< ここまで構造化ルールの処理 >>>
+                        window_size = max_off_days + 1
+                        for d_start in range(-initial_consecutive_off, num_days - max_off_days):
+                            vars_in_window = []
+                            for d_offset in range(window_size):
+                                d_current = d_start + d_offset
+                                if d_current < 0: continue
+                                if d_current >= num_days: break
+                                vars_in_window.append(is_off[d_current])
 
-    # <<< 施設全体ルール & 従業員情報依存のルールの追加 >>>
+                            window_sum_expr = cp_model.LinearExpr.Sum(vars_in_window)
+                            effective_max_off_days = max_off_days
+                            if d_start < 0:
+                                effective_window_size = window_size + d_start
+                                if effective_window_size <= 0: continue
+                                effective_max_off_days = max(0, effective_window_size - 1)
 
-    # 直前勤務 (#3) - (従業員ループが必要なのでここに残す)
-    if past_shifts_lookup is not None:
-        for e_idx in all_employees:
-             emp_id = emp_idx_to_id.get(e_idx)
-             emp_info = get_employee_info(employees_df, emp_id)
-             if emp_info is not None and emp_info.get('status') not in ['育休', '病休'] and emp_id in past_shifts_lookup.index:
-                 prev_date_str = (START_DATE - timedelta(days=1)).strftime('%#m/%#d')
-                 prev_2_date_str = (START_DATE - timedelta(days=2)).strftime('%#m/%#d')
-                 prev_shift = past_shifts_lookup.loc[emp_id, prev_date_str] if prev_date_str in past_shifts_lookup.columns else None
-                 prev_2_shift = past_shifts_lookup.loc[emp_id, prev_2_date_str] if prev_2_date_str in past_shifts_lookup.columns else None
-                 if prev_shift == '夜': model.Add(shifts[(e_idx, 0)] == SHIFT_MAP_INT['明'])
-                 elif prev_shift == '明': model.Add(shifts[(e_idx, 0)] == SHIFT_MAP_INT['公'])
-                 elif prev_2_shift == '夜' and prev_shift == '明': model.Add(shifts[(e_idx, 0)] == SHIFT_MAP_INT['公'])
+                            if is_hard:
+                                if effective_max_off_days < max_off_days:
+                                    model.Add(window_sum_expr <= effective_max_off_days)
+                                else:
+                                    model.Add(window_sum_expr <= max_off_days)
+                            else:
+                                max_possible_excess = window_size
+                                excess_var = model.NewIntVar(0, max_possible_excess, f'max_off_excess_fac_e{e_idx}_d{d_start}')
+                                model.Add(window_sum_expr - effective_max_off_days <= excess_var)
+                                max_consecutive_off_penalties.append(excess_var)
+                        # --- ロジック展開ここまで ---
+                        processed_rule_types.add(rule_key_emp) # 従業員単位でマーク
+                    processed_facility_rules.add(rule_key_facility)
+                else:
+                    print(f"警告(施設モデル): 無効なパラメータまたは重複する MAX_CONSECUTIVE_OFF ルール: {rule}")
 
-    # 人員配置基準 (#4) - 応援なし版に簡略化 (実験スコープ)
-    # ... (元のコードを維持 - 修正: 実験スコープに合わせて total_required_personnel を計算)
-    personnel_key_map = {"日勤": "日", "早出": "早", "夜勤": "夜"}
-    total_required_personnel = {}
-    for shift_sym in [personnel_key_map[k] for k in personnel_key_map]:
-        shift_int = SHIFT_MAP_INT.get(shift_sym)
-        if shift_int is not None:
-             verbose_key = next((vk for vk, vs in personnel_key_map.items() if vs == shift_sym), None)
-             if verbose_key and '1F' in REQUIRED_PERSONNEL: # 実験用に1Fのみ参照
-                  total_needed = REQUIRED_PERSONNEL['1F'].get(verbose_key, 0)
-                  if total_needed > 0:
-                       total_required_personnel[shift_int] = total_needed
-    # 制約追加
-    for d_idx in all_days:
-        for shift_int, required_count in total_required_personnel.items():
-            # 修正: ブール変数を使う方法に戻す
-            personnel_bool_vars = []
-            for e_idx in all_employees:
-                emp_info = get_employee_info(employees_df, employee_ids[e_idx])
-                if emp_info is not None:
-                    status = emp_info.get('status', '')
-                    if status in ['育休', '病休']: continue
-                is_assigned_total = model.NewBoolVar(f'is_total_assigned_e{e_idx}_d{d_idx}_s{shift_int}')
-                model.Add(shifts[(e_idx, d_idx)] == shift_int).OnlyEnforceIf(is_assigned_total)
-                model.Add(shifts[(e_idx, d_idx)] != shift_int).OnlyEnforceIf(is_assigned_total.Not())
-                personnel_bool_vars.append(is_assigned_total)
-            model.Add(sum(personnel_bool_vars) == required_count)
+            elif rule_type == 'BALANCE_OFF_DAYS':
+                group_name = rule.get('employee_group', 'ALL')
+                weight = rule.get('weight', 1)
+                target_employee_indices = get_employees_by_group(employees_df, group_name, emp_id_to_idx)
+                
+                if len(target_employee_indices) > 1:
+                    num_off_days_vars = {}
+                    off_day_int_eq = SHIFT_MAP_INT['公']
+                    for e_idx in target_employee_indices:
+                        off_count_expr = cp_model.LinearExpr.Sum([shifts[(e_idx, d_idx)] == off_day_int_eq for d_idx in all_days])
+                        num_off_days_vars[e_idx] = model.NewIntVar(0, num_days, f'off_count_bal_e{e_idx}')
+                        model.Add(num_off_days_vars[e_idx] == off_count_expr)
+                    
+                    min_off_days = model.NewIntVar(0, num_days, f'min_off_bal_{group_name}')
+                    max_off_days = model.NewIntVar(0, num_days, f'max_off_bal_{group_name}')
+                    model.AddMinEquality(min_off_days, list(num_off_days_vars.values()))
+                    model.AddMaxEquality(max_off_days, list(num_off_days_vars.values()))
+                    off_days_difference = model.NewIntVar(0, num_days, f'off_diff_bal_{group_name}')
+                    model.Add(off_days_difference == max_off_days - min_off_days)
+                    # 重みを考慮してペナルティリストに追加
+                    penalty_value = int(round(weight * 100)) if isinstance(weight, (int, float)) else 100
+                    balance_off_days_penalties.append(off_days_difference * penalty_value)
+                    processed_facility_rules.add(rule_key)
+                else:
+                    print(f"警告(施設モデル): 対象者が1名以下のため BALANCE_OFF_DAYS ルールはスキップ: {rule}")
 
-    # 夜勤ローテ (#5) - 全員に適用
+            elif rule_type == 'UNPARSABLE':
+                print(f"情報(施設モデル): 処理できないルール: {rule}")
+            # else: 未知のルールタイプはパーサーで弾かれるはず
+
+    # <<< ここまで施設全体ルールの処理 >>>
+
+    # <<< 既存の全体ルールのうち、AI解釈に置き換えられないもの >>>
+    # 直前勤務 (#3) は個人ルール側で処理される想定
+    # 夜勤ローテーション (#5) は ENFORCE_SHIFT_SEQUENCE で代替想定 (現状ハードコード)
+    # -> 夜勤ローテのハードコードは残す (ENFORCE_SHIFT_SEQUENCE が facility_rules になければ)
+    night_seq_enforced_by_rule = any(r.get('rule_type') == 'ENFORCE_SHIFT_SEQUENCE' and r.get('employee_group') == 'ALL' for r in facility_rules)
+    if not night_seq_enforced_by_rule:
+        print("Applying hardcoded night rotation rule (no facility rule found).")
     for e_idx in all_employees:
         emp_info = get_employee_info(employees_df, emp_idx_to_id.get(e_idx))
         if emp_info is not None and emp_info.get('status') in ['育休', '病休']: continue
         for d_idx in range(num_days - 1):
-            b_night = model.NewBoolVar(f'b_n_e{e_idx}d{d_idx}')
+            b_night = model.NewBoolVar(f'b_n_e{e_idx}d{d_idx}_hc')
             model.Add(shifts[(e_idx, d_idx)] == SHIFT_MAP_INT['夜']).OnlyEnforceIf(b_night)
             model.Add(shifts[(e_idx, d_idx)] != SHIFT_MAP_INT['夜']).OnlyEnforceIf(b_night.Not())
             model.Add(shifts[(e_idx, d_idx + 1)] == SHIFT_MAP_INT['明']).OnlyEnforceIf(b_night)
-            b_ake = model.NewBoolVar(f'b_a_e{e_idx}d{d_idx}')
+            b_ake = model.NewBoolVar(f'b_a_e{e_idx}d{d_idx}_hc')
             model.Add(shifts[(e_idx, d_idx)] == SHIFT_MAP_INT['明']).OnlyEnforceIf(b_ake)
             model.Add(shifts[(e_idx, d_idx)] != SHIFT_MAP_INT['明']).OnlyEnforceIf(b_ake.Not())
             model.Add(shifts[(e_idx, d_idx + 1)] == SHIFT_MAP_INT['公']).OnlyEnforceIf(b_ake)
 
-    # 副主任勤務 (#14) - 役職情報が必要なのでここに残す
-    vice_manager_indices = [e_idx for e_idx in all_employees if (emp_info := get_employee_info(employees_df, emp_idx_to_id.get(e_idx))) is not None and emp_info.get('役職') == '副主任' and emp_info.get('status') not in ['育休', '病休']]
-    if vice_manager_indices:
-        for d_idx in all_days:
-            target_date = date_range[d_idx]
-            weekday = target_date.weekday()
-            is_weekend_or_holiday = (weekday >= 5) or (target_date in jp_holidays)
-            if is_weekend_or_holiday:
-                is_off_vm_vars = []
-                off_shift_ints_vm = OFF_SHIFT_INTS
-                allowed_off_tuples = [(s,) for s in off_shift_ints_vm]
-                for vm_idx in vice_manager_indices:
-                    is_off = model.NewBoolVar(f'is_off_vm_e{vm_idx}_d{d_idx}')
-                    model.AddAllowedAssignments((shifts[(vm_idx, d_idx)],), allowed_off_tuples).OnlyEnforceIf(is_off)
-                    model.AddForbiddenAssignments((shifts[(vm_idx, d_idx)],), allowed_off_tuples).OnlyEnforceIf(is_off.Not())
-                    is_off_vm_vars.append(is_off)
-                model.Add(sum(is_off_vm_vars) <= len(vice_manager_indices) - 1)
+    # 人員配置基準 (#4) - ハードコード部分をコメントアウト (REQUIRED_STAFFINGルールで代替)
+    # personnel_key_map = ...
+    # total_required_personnel = ...
+    # ... (ループと制約追加)
 
-    # <<< ソフト制約のペナルティ計算 >>>
-    # 明け人数≒前日夜勤人数のペナルティ計算ロジックは変更なし
-    # ...
+    # 副主任勤務 (#14) - ハードコード部分をコメントアウト (MIN_ROLE_ON_DUTYルールで代替)
+    # vice_manager_indices = ...
+    # if vice_manager_indices:
+    #    ... (ループと制約追加)
 
-    # ソフト制約 3: 明け人数≒前日夜勤人数 (ペナルティ変数リストに追加)
-    night_shift_int = SHIFT_MAP_INT['夜']
-    ake_shift_int = SHIFT_MAP_INT['明']
-    for d_idx in all_days:
-        # 修正: ブール変数 is_ake のリストを作成
-        ake_today_bool_vars = []
-        for e_idx in all_employees:
-            is_ake = model.NewBoolVar(f'is_ake_total_e{e_idx}_d{d_idx}')
-            model.Add(shifts[(e_idx, d_idx)] == ake_shift_int).OnlyEnforceIf(is_ake)
-            model.Add(shifts[(e_idx, d_idx)] != ake_shift_int).OnlyEnforceIf(is_ake.Not())
-            ake_today_bool_vars.append(is_ake)
-        ake_today_sum = sum(ake_today_bool_vars) # PythonのsumでOK
+    # 明け人数均等化 (ソフト#3) はスコープ外
+    # 応援最小化 (ソフト#2) は目的関数で直接扱う？（現状ハードコード） -> そのまま
 
-        # 修正: 前日の夜勤合計もブール変数で
-        night_yesterday_sum_expr = None
-        if d_idx > 0:
-             night_yesterday_bool_vars = []
-             for e_idx in all_employees:
-                  is_night_yd = model.NewBoolVar(f'is_night_yd_e{e_idx}_d{d_idx-1}')
-                  model.Add(shifts[(e_idx, d_idx - 1)] == night_shift_int).OnlyEnforceIf(is_night_yd)
-                  model.Add(shifts[(e_idx, d_idx - 1)] != night_shift_int).OnlyEnforceIf(is_night_yd.Not())
-                  night_yesterday_bool_vars.append(is_night_yd)
-             night_yesterday_sum_expr = sum(night_yesterday_bool_vars) # PythonのsumでOK
-        else:
-             count_night_last_day = 0
-             if past_shifts_lookup is not None:
-                  prev_date_str = (START_DATE - timedelta(days=1)).strftime('%#m/%#d')
-                  if prev_date_str in past_shifts_lookup.columns:
-                       count_night_last_day = sum(1 for emp_id in past_shifts_lookup.index if past_shifts_lookup.loc[emp_id, prev_date_str] == '夜')
-             night_yesterday_sum_expr = count_night_last_day
-
-        # 差の絶対値をペナルティとする
-        max_possible_deviation = num_employees
-        deviation_var = model.NewIntVar(0, max_possible_deviation, f'ake_dev_d{d_idx}')
-        model.AddAbsEquality(deviation_var, ake_today_sum - night_yesterday_sum_expr)
-        ake_count_deviation_penalties.append(deviation_var)
-
-    # ソフト制約 5: 公休均等化 (コメントアウト中)
-    # ...
-
-    # ソフト制約 6: 特定日付の夜勤希望 (SPECIFY_DATE_SHIFT の is_hard=False で処理される)
-    # (night_preference_penalties は SPECIFY_DATE_SHIFT の処理ループで作成済み)
-
-    # --- 目的関数 --- (公休均等化ペナルティを除外)
+    # --- 目的関数 --- 
     objective_terms = []
-    # 各ペナルティリスト名と重み (weight はここで掛ける)
+    # 各ペナルティリスト名と重み
     penalties_with_weights = [
-        (ab_schedule_penalties, 1), # 重みは変数作成時に適用済み
-        (weekday_penalties, 1),     # 重みは変数作成時に適用済み
-        (night_preference_penalties, 1), # 重みは変数作成時に適用済み
+        (ab_schedule_penalties, 1),
+        (weekday_penalties, 1),
+        (night_preference_penalties, 1),
         (max_consecutive_work_penalties, 1),
         (max_consecutive_off_penalties, 1),
-        (total_shift_count_penalties, 1), # 追加 (重みは一旦1)
-        # (all_help_vars, 1), # 応援スコープ外
+        (total_shift_count_penalties, 1),
+        (balance_off_days_penalties, 1),
         (ake_count_deviation_penalties, 1),
+        (total_staffing_penalties, 1),
+        (min_role_penalties, 1),
+        (forbid_sequence_penalties, 1),
+        (enforce_sequence_penalties, 1),
+        # TODO: 応援ペナルティを追加？
     ]
 
     # 目的関数にペナルティ項を追加
@@ -593,3 +474,61 @@ def build_shift_model(employees_df, past_shifts_df, date_range, jp_holidays, str
 
     print("Constraints added.")
     return model, shifts, employee_ids, date_range 
+
+
+# --- ヘルパー関数 (新規追加/修正) ---
+
+def match_date_type(target_date: date, date_type: str, jp_holidays: set) -> bool:
+    """日付が指定された日付タイプに一致するか判定"""
+    if date_type == "ALL": return True
+    weekday = target_date.weekday()
+    is_holiday = target_date in jp_holidays
+    if date_type == "平日": return weekday < 5 and not is_holiday
+    if date_type == "休日": return weekday >= 5 or is_holiday # 土日または祝日
+    if date_type == "祝日": return is_holiday
+    if date_type == "土日": return weekday >= 5
+    if date_type == "土日祝": return weekday >= 5 or is_holiday
+    try:
+        # YYYY-MM-DD形式かチェック
+        specific_date = date.fromisoformat(date_type)
+        return target_date == specific_date
+    except ValueError:
+        return False # 不明なタイプ
+
+def get_employees_by_group(employees_df, group_name, emp_id_to_idx):
+    """指定されたグループ名に属する従業員のインデックスリストを返す"""
+    target_indices = []
+    for idx, eid in emp_id_to_idx.items():
+        emp_info = get_employee_info(employees_df, eid)
+        # ここも is not None でチェック (前回修正済みのはず)
+        if emp_info is None: continue
+
+        status = emp_info.get('status')
+        if status in ['育休', '病休']: continue
+
+        if group_name == "ALL":
+            target_indices.append(idx)
+        elif group_name == "常勤":
+            if emp_info.get('常勤/パート') == '常勤':
+                 target_indices.append(idx)
+        elif group_name == "パート":
+            if 'パート' in str(emp_info.get('常勤/パート')):
+                 target_indices.append(idx)
+        else:
+            # 役職名でフィルタリング
+            if emp_info.get('役職') == group_name:
+                target_indices.append(idx)
+    
+    # グループが見つからなかった場合の警告（任意）
+    if not target_indices:
+         if group_name not in ["ALL", "常勤", "パート"]:
+             # ALL/常勤/パート以外で見つからない場合は役職名の可能性が高い
+              print(f"警告: 従業員情報にグループ/役職名 '{group_name}' が見つからないか、対象者がいません。")
+         elif group_name in ["常勤", "パート"]:
+              print(f"警告: グループ '{group_name}' に属する有効な従業員が見つかりません。")
+
+    return target_indices
+
+# add_max_consecutive_off_constraint 関数定義を削除
+# def add_max_consecutive_off_constraint(...):
+#    ... 

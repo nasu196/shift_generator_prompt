@@ -5,7 +5,7 @@ from datetime import date, timedelta
 # constants から新しいファイルパス定数をインポート
 from src.constants import (
     START_DATE, END_DATE, # load_past_shifts で使用
-    EMPLOYEE_INFO_FILE, PAST_SHIFT_FILE, RULES_FILE # 各ロード関数で使用
+    EMPLOYEE_INFO_FILE, PAST_SHIFT_FILE, RULES_FILE, FACILITY_RULES_FILE # 各ロード関数で使用
 )
 # from src.utils import get_date_range # load_employee_data内では使わなくなった
 # from src.constants import SHIFT_MAP_INT # parse_constraints削除により不要
@@ -100,6 +100,20 @@ def load_natural_language_rules(filepath=RULES_FILE):
         return rules_dict
     except FileNotFoundError: print(f"エラー: ファイルが見つかりません - {filepath}"); return {}
     except Exception as e: print(f"エラー: 自然言語ルールファイルの読み込み中にエラー - {e}"); return {}
+
+def load_facility_rules(file_path=FACILITY_RULES_FILE) -> list[str] | None:
+    """施設全体ルールファイルを読み込み、ルール文字列のリストを返す"""
+    try:
+        with open(file_path, 'r', encoding='utf-8') as f:
+            facility_rules = [line.strip() for line in f if line.strip()] # 空行は無視
+        print(f"施設全体ルールファイルを読み込みました: {file_path} ({len(facility_rules)} rules)")
+        return facility_rules
+    except FileNotFoundError:
+        print(f"情報: 施設全体ルールファイルが見つかりません: {file_path}")
+        return [] # ファイルがなくてもエラーとしない
+    except Exception as e:
+        print(f"エラー: {file_path} の読み込み中にエラーが発生しました: {e}")
+        return None
 
 # --- ここから下は古いパース関数なので削除 --- #
 # def parse_holiday_request(...):

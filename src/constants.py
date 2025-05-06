@@ -4,12 +4,14 @@ from datetime import date, timedelta
 # --- ファイルパス ---
 EMPLOYEE_INFO_FILE = "input/employees.csv"
 PAST_SHIFT_FILE = "input/past_shifts.csv"
-RULES_FILE = "input/rules.csv"
+RULES_FILE = "input/rules.csv" # 個人ルール用
+FACILITY_RULES_FILE = "input/facility_rules.txt" # 施設ルール用入力ファイル
 OUTPUT_DIR = "results"
 
 # --- AI関連 ---
-AI_PROMPT_FILE = "prompts/rule_shaping_prompt.md"
-AI_MODEL_NAME = "gemini-2.0-flash" # 再度 2.0 Flash を試す
+AI_PROMPT_FILE = "prompts/rule_shaping_prompt.md" # 個人ルール用プロンプト
+FACILITY_AI_PROMPT_FILE = "prompts/facility_rule_shaping_prompt.md" # 施設ルール用プロンプト
+AI_MODEL_NAME = "gemini-2.5-pro-preview-03-25" # 2.5 Pro のプレビュー版を試す
 
 # --- 期間設定 ---
 START_DATE = date(2025, 4, 10)
