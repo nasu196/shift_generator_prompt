@@ -83,6 +83,7 @@ def build_shift_model(employees_df, past_shifts_df, date_range, jp_holidays, per
     # <<< 個人ルールの処理 >>>
     print("Processing personal rules...")
     processed_rule_types = set()
+    processed_facility_rules = set() # 施設ルール用の処理済みセットを追加
     employee_specific_rules = {e_idx: [] for e_idx in all_employees}
     for rule in personal_rules:
         employee_id = rule.get('employee')
@@ -306,75 +307,87 @@ def build_shift_model(employees_df, past_shifts_df, date_range, jp_holidays, per
                  else:
                      print(f"警告(モデル): 無効または重複する TOTAL_SHIFT_COUNT ルール: {rule}")
 
-            elif rule_type == 'MAX_CONSECUTIVE_OFF':
-                # グループ指定の最大連休 (個人ルール実装を流用 -> 直接実装に変更)
-                group_name = rule.get('employee_group', 'ALL')
+            elif rule_type == 'MAX_CONSECUTIVE_OFF': # 個人ルール用
                 max_off_days = rule.get('max_days')
                 is_hard = rule.get('is_hard', True)
-                target_employee_indices = get_employees_by_group(employees_df, group_name, emp_id_to_idx)
-                rule_key_facility = f"max_off_fac_{group_name}_{max_off_days}_{is_hard}"
+                rule_key = f"max_off_{e_idx}" # 従業員ごとに一意
 
-                # target_employee_indices が空の場合の警告を追加
-                if not target_employee_indices:
-                     print(f"警告(施設モデル): MAX_CONSECUTIVE_OFF の対象グループ '{group_name}' が見つかりません。ルールスキップ: {rule}")
-                     continue
+                if rule_key not in processed_rule_types and isinstance(max_off_days, int) and max_off_days >= 0:
+                    is_off_personal = [model.NewBoolVar(f'is_off_pers_e{e_idx}_d{d_idx}') for d_idx in all_days]
+                    off_tuples_personal = [(off_int,) for off_int in OFF_SHIFT_INTS]
+                    for d_idx in all_days:
+                        model.AddAllowedAssignments((shifts[(e_idx, d_idx)],), off_tuples_personal).OnlyEnforceIf(is_off_personal[d_idx])
+                        model.AddForbiddenAssignments((shifts[(e_idx, d_idx)],), off_tuples_personal).OnlyEnforceIf(is_off_personal[d_idx].Not())
 
-                if isinstance(max_off_days, int) and max_off_days >= 0 and isinstance(is_hard, bool) and rule_key_facility not in processed_facility_rules:
-                    print(f"DEBUG (Facility MAX_CONSECUTIVE_OFF): Applying to group '{group_name}' (indices: {target_employee_indices}) with max_days={max_off_days}, is_hard={is_hard}")
-                    for e_idx in target_employee_indices:
-                        rule_key_emp = f'max_off_{e_idx}'
-                        if rule_key_emp in processed_rule_types: continue # 個人ルール優先
-                        
-                        # --- add_max_consecutive_off_constraint のロジックをここに展開 ---
-                        is_off = [model.NewBoolVar(f'is_off_r_maxoff_fac_e{e_idx}_d{d_idx}') for d_idx in all_days]
-                        off_tuples = [(off_int,) for off_int in OFF_SHIFT_INTS]
-                        for d_idx in all_days:
-                            model.AddAllowedAssignments((shifts[(e_idx, d_idx)],), off_tuples).OnlyEnforceIf(is_off[d_idx])
-                            model.AddForbiddenAssignments((shifts[(e_idx, d_idx)],), off_tuples).OnlyEnforceIf(is_off[d_idx].Not())
-
-                        initial_consecutive_off = 0
-                        emp_id = emp_idx_to_id.get(e_idx) # emp_id を取得
-                        if past_shifts_lookup is not None and emp_id is not None and emp_id in past_shifts_lookup.index:
-                            for i in range(1, max_off_days + 2):
-                                past_date_str = (START_DATE - timedelta(days=i)).strftime('%#m/%#d')
-                                if past_date_str in past_shifts_lookup.columns:
-                                    past_shift = past_shifts_lookup.loc[emp_id, past_date_str]
-                                    if past_shift and past_shift in SHIFT_MAP_INT and SHIFT_MAP_INT[past_shift] in OFF_SHIFT_INTS:
-                                        initial_consecutive_off += 1
-                                    else: break
-                                else: break
-
-                        window_size = max_off_days + 1
-                        for d_start in range(-initial_consecutive_off, num_days - max_off_days):
-                            vars_in_window = []
-                            for d_offset in range(window_size):
-                                d_current = d_start + d_offset
-                                if d_current < 0: continue
-                                if d_current >= num_days: break
-                                vars_in_window.append(is_off[d_current])
-
-                            window_sum_expr = cp_model.LinearExpr.Sum(vars_in_window)
-                            effective_max_off_days = max_off_days
-                            if d_start < 0:
-                                effective_window_size = window_size + d_start
-                                if effective_window_size <= 0: continue
-                                effective_max_off_days = max(0, effective_window_size - 1)
-
-                            if is_hard:
-                                if effective_max_off_days < max_off_days:
-                                    model.Add(window_sum_expr <= effective_max_off_days)
+                    initial_consecutive_off = 0
+                    if past_shifts_lookup is not None and emp_id in past_shifts_lookup.index:
+                        for i in range(1, max_off_days + 2):
+                            past_date_str = (START_DATE - timedelta(days=i)).strftime('%#m/%#d')
+                            if past_date_str in past_shifts_lookup.columns:
+                                past_shift = past_shifts_lookup.loc[emp_id, past_date_str]
+                                if past_shift and past_shift in SHIFT_MAP_INT and SHIFT_MAP_INT[past_shift] in OFF_SHIFT_INTS:
+                                    initial_consecutive_off += 1
                                 else:
-                                    model.Add(window_sum_expr <= max_off_days)
+                                    break
                             else:
-                                max_possible_excess = window_size
-                                excess_var = model.NewIntVar(0, max_possible_excess, f'max_off_excess_fac_e{e_idx}_d{d_start}')
-                                model.Add(window_sum_expr - effective_max_off_days <= excess_var)
-                                max_consecutive_off_penalties.append(excess_var)
-                        # --- ロジック展開ここまで ---
-                        processed_rule_types.add(rule_key_emp) # 従業員単位でマーク
-                    processed_facility_rules.add(rule_key_facility)
+                                break
+                    
+                    window_size = max_off_days + 1
+                    for d_start in range(-initial_consecutive_off, num_days - max_off_days):
+                        vars_in_window = []
+                        for d_offset in range(window_size):
+                            d_current = d_start + d_offset
+                            if d_current < 0: continue
+                            if d_current >= num_days: break
+                            vars_in_window.append(is_off_personal[d_current])
+                        
+                        window_sum_expr = cp_model.LinearExpr.Sum(vars_in_window)
+                        effective_max_off = max_off_days
+                        if d_start < 0:
+                            effective_window_size = window_size + d_start
+                            if effective_window_size <=0: continue
+                            effective_max_off = max(0, effective_window_size -1)
+
+                        if is_hard:
+                            if effective_max_off < max_off_days:
+                                model.Add(window_sum_expr <= effective_max_off)
+                            else:
+                                model.Add(window_sum_expr <= max_off_days)
+                        else:
+                            max_possible_excess_off = window_size
+                            excess_off_var = model.NewIntVar(0, max_possible_excess_off, f'max_pers_off_excess_e{e_idx}_d{d_start}')
+                            model.Add(window_sum_expr - effective_max_off <= excess_off_var)
+                            max_consecutive_off_penalties.append(excess_off_var) # 共通のペナルティリストを使用
+                    processed_rule_types.add(rule_key)
+                elif rule_key in processed_rule_types:
+                    print(f"情報(モデル): MAX_CONSECUTIVE_OFF (個人) ルールは既に処理済み: {emp_id}")
                 else:
-                    print(f"警告(施設モデル): 無効なパラメータまたは重複する MAX_CONSECUTIVE_OFF ルール: {rule}")
+                    print(f"警告(モデル): 無効なパラメータを持つ MAX_CONSECUTIVE_OFF (個人) ルールをスキップ: {rule}")
+
+            elif rule_type == 'PREFER_WEEKDAY_SHIFT':
+                weekday = rule.get('weekday') # 0=月曜日, 6=日曜日
+                shift_sym = rule.get('shift')
+                is_hard = rule.get('is_hard', False) # デフォルトはソフト制約
+                weight = rule.get('weight', 1) # ソフト制約時の重み
+                rule_key = f"pref_weekday_{e_idx}_{weekday}_{shift_sym}_{is_hard}"
+
+                if rule_key not in processed_rule_types and isinstance(weekday, int) and 0 <= weekday <= 6 and shift_sym in SHIFT_MAP_INT:
+                    shift_int = SHIFT_MAP_INT[shift_sym]
+                    for d_idx in all_days:
+                        if date_range[d_idx].weekday() == weekday:
+                            if is_hard:
+                                model.Add(shifts[(e_idx, d_idx)] == shift_int)
+                            else:
+                                penalty_var = model.NewBoolVar(f'pref_weekday_penalty_e{e_idx}_d{d_idx}_w{weekday}_s{shift_sym}')
+                                model.Add(shifts[(e_idx, d_idx)] != shift_int).OnlyEnforceIf(penalty_var)
+                                model.Add(shifts[(e_idx, d_idx)] == shift_int).OnlyEnforceIf(penalty_var.Not())
+                                # 重み付けされたペナルティとして weekday_penalties に追加 (weight は整数化して扱う)
+                                weekday_penalties.append(penalty_var * int(weight))
+                    processed_rule_types.add(rule_key)
+                elif rule_key in processed_rule_types:
+                    print(f"情報(モデル): PREFER_WEEKDAY_SHIFT ルールは既に処理済み: {emp_id}, weekday={weekday}, shift={shift_sym}")
+                else:
+                    print(f"警告(モデル): 無効なパラメータを持つ PREFER_WEEKDAY_SHIFT ルールをスキップ: {rule}")
 
             elif rule_type == 'BALANCE_OFF_DAYS':
                 group_name = rule.get('employee_group', 'ALL')
@@ -402,107 +415,74 @@ def build_shift_model(employees_df, past_shifts_df, date_range, jp_holidays, per
                 else:
                     print(f"警告(施設モデル): 対象者が1名以下のため BALANCE_OFF_DAYS ルールはスキップ: {rule}")
 
-            elif rule_type == 'ENFORCE_SHIFT_SEQUENCE': # 施設向け
-                group_name = rule.get('employee_group', 'ALL')
+            elif rule_type == 'ENFORCE_SHIFT_SEQUENCE':
                 preceding_shift_sym = rule.get('preceding_shift')
                 subsequent_shift_sym = rule.get('subsequent_shift')
-                is_hard = rule.get('is_hard', True) # デフォルトTrue
-                rule_key = f"fac_enforce_seq_{group_name}_{preceding_shift_sym}_{subsequent_shift_sym}_{is_hard}"
+                is_hard = rule.get('is_hard', True) # デフォルトはハード制約
+                rule_key = f"enforce_seq_{e_idx}_{preceding_shift_sym}_{subsequent_shift_sym}"
 
-                if rule_key not in processed_facility_rules:
-                    target_employee_indices = get_employees_by_group(employees_df, group_name, emp_id_to_idx)
-                    if not target_employee_indices:
-                        print(f"警告(施設モデル): ENFORCE_SHIFT_SEQUENCE の対象グループ '{group_name}' が見つかりません。ルールスキップ: {rule}")
-                        # continue #ループ内でないためcontinueは不可
-                    else:
-                        pre_shift_int = SHIFT_MAP_INT.get(preceding_shift_sym)
-                        sub_shift_int = SHIFT_MAP_INT.get(subsequent_shift_sym)
-
-                        if pre_shift_int is not None and sub_shift_int is not None:
-                            for e_idx in target_employee_indices:
-                                emp_id_current = emp_idx_to_id.get(e_idx)
-                                emp_info_current = get_employee_info(employees_df, emp_id_current)
-                                if emp_info_current and emp_info_current.get('status') in ['育休', '病休']:
-                                    continue
-                                for d_idx in range(num_days - 1):
-                                    # b_pre is true if shifts[(e_idx, d_idx)] == pre_shift_int
-                                    b_pre = model.NewBoolVar(f'fac_enf_seq_pre_e{e_idx}_d{d_idx}_{rule_key[:10]}')
-                                    model.Add(shifts[(e_idx, d_idx)] == pre_shift_int).OnlyEnforceIf(b_pre)
-                                    model.Add(shifts[(e_idx, d_idx)] != pre_shift_int).OnlyEnforceIf(b_pre.Not())
-                                    
-                                    # if b_pre is true, then shifts[(e_idx, d_idx + 1)] must be sub_shift_int
-                                    if is_hard:
-                                        model.Add(shifts[(e_idx, d_idx + 1)] == sub_shift_int).OnlyEnforceIf(b_pre)
-                                    else:
-                                        # ソフト制約: 違反した場合にペナルティ
-                                        b_viol = model.NewBoolVar(f'fac_enf_seq_viol_e{e_idx}_d{d_idx}_{rule_key[:10]}')
-                                        # 違反条件: b_pre が True かつ shifts[(e_idx, d_idx + 1)] != sub_shift_int
-                                        # b_viol が True <=> 違反
-                                        model.Add(shifts[(e_idx, d_idx + 1)] != sub_shift_int).OnlyEnforceIf(b_pre, b_viol)
-                                        # b_viol が False なら違反していない (b_pre がFalse か、または シーケンスが守られている)
-                                        # 上記の制約だけだと、b_pre=True, shifts==sub の場合に b_viol がTrueにもFalseにもなれる。
-                                        # 正しくは、b_viol が True <=> (b_pre AND shifts != sub)
-                                        # (b_pre AND shifts != sub) => b_viol  : model.AddImplication(b_pre, model.Implication(shifts[(e,d+1)]!=sub, b_viol) これは複雑
-                                        # 直接的に違反変数を定義する
-                                        # 違反 = 1 if (先行が一致 AND 後続が不一致) else 0
-                                        # penalty_var = model.NewBoolVar(...)
-                                        # model.Add(shifts[(e_idx, d_idx)] == pre_shift_int)
-                                        # model.Add(shifts[(e_idx, d_idx+1)] != sub_shift_int)
-                                        # 上記2つが同時に成り立つ場合に penalty_var を 1 にする ->難しい
-                                        # 代わりに、(先行 => 後続) が False の場合にペナルティ
-                                        # (A => B) は (not A or B)。この否定は (A and not B)
-                                        is_not_subsequent = model.NewBoolVar('')
-                                        model.Add(shifts[(e_idx, d_idx+1)] != sub_shift_int).OnlyEnforceIf(is_not_subsequent)
-                                        model.Add(shifts[(e_idx, d_idx+1)] == sub_shift_int).OnlyEnforceIf(is_not_subsequent.Not())
-
-                                        # violation = b_pre AND is_not_subsequent
-                                        violation_var = model.NewBoolVar(f'fac_enf_seq_v_e{e_idx}_d{d_idx}')
-                                        model.AddBoolAnd([b_pre, is_not_subsequent]).OnlyEnforceIf(violation_var)
-                                        model.AddImplication(violation_var, b_pre) # if violation then b_pre must be true
-                                        model.AddImplication(violation_var, is_not_subsequent) # if violation then is_not_subsequent must be true
-                                        # (Converse) If b_pre and is_not_subsequent, then violation_var must be true.
-                                        # This is tricky with OnlyEnforceIf for the converse.
-                                        # A simpler way for soft (A => B) is to penalize A and Not B.
-                                        # Penalty if b_pre is true AND shifts[e,d+1] is NOT sub_shift_int
-                                        # Let p be penalty var. p=1 if b_pre and shifts[e,d+1]!=sub_shift_int
-                                        # p >= b_pre + (1 if shifts[e,d+1]!=sub_shift_int else 0) - 1
-                                        # This is also complex. Let's use a simpler penalty for now if we must.
-                                        # The most straightforward way is to add a large cost if is_hard=False and the AddImplication is violated.
-                                        # For CpModel, we can rephrase: Add(shifts[(e, d+1)] == sub_shift_int).OnlyEnforceIf(b_pre) is hard.
-                                        # For soft, we would typically add a variable to the objective that represents the violation.
-                                        # (b_pre implies shifts[e,d+1]==sub_shift_int). Penality if b_pre AND shifts[e,d+1]!=sub_shift_int
-                                        # This is equivalent to (NOT b_pre) OR (shifts[e,d+1]==sub_shift_int). Maximize this for all d.
-                                        # Or, minimize cases where b_pre AND shifts[e,d+1]!=sub_shift_int.
-                                        enf_seq_penalty_var = model.NewBoolVar(f'enf_seq_penalty_e{e_idx}_d{d_idx}_{rule_key[:5]}')
-                                        # We want enf_seq_penalty_var to be 1 if (b_pre AND shifts[e,d+1] != sub_shift_int)
-                                        # This means (NOT b_pre) OR (shifts[e,d+1] == sub_shift_int) OR enf_seq_penalty_var
-                                        model.AddBoolOr([b_pre.Not(), shifts[(e_idx, d_idx+1)] == sub_shift_int, enf_seq_penalty_var])
-                                        # And if b_pre and shifts[e,d+1]!=sub_shift_int, then enf_seq_penalty_var must be true.
-                                        # (b_pre AND shifts[e,d+1]!=sub_shift_int) IMPLIES enf_seq_penalty_var.
-                                        # This is not quite right for penalty. We want to count violations.
-                                        # Add a var that is 1 if b_pre is true and shifts[e,d+1] != sub_shift_int
-                                        violation = model.NewBoolVar(f'enf_seq_viol_e{e_idx}_d{d_idx}')
-                                        model.Add(shifts[(e_idx, d_idx)] == pre_shift_int).OnlyEnforceIf(violation) # if violation, pre must match
-                                        model.Add(shifts[(e_idx, d_idx+1)] != sub_shift_int).OnlyEnforceIf(violation) # if violation, sub must not match
-                                        # This means violation can only be true if both conditions met.
-                                        # We also need: if both conditions met, violation MUST be true.
-                                        # model.AddImplication(model.BoolAnd([b_pre, is_not_subsequent_placeholder]), violation) -> BoolAnd not directly available in AddImplication
-                                        # Create intermediate for (shifts[e,d+1]!=sub_shift_int)
-                                        not_sub_shift = model.NewBoolVar(f'not_sub_e{e_idx}_d{d_idx}')
-                                        model.Add(shifts[(e_idx, d_idx+1)] != sub_shift_int).OnlyEnforceIf(not_sub_shift)
-                                        model.Add(shifts[(e_idx, d_idx+1)] == sub_shift_int).OnlyEnforceIf(not_sub_shift.Not())
-                                        # violation is true if (b_pre AND not_sub_shift)
-                                        model.AddMultiplicationEquality(violation, [b_pre, not_sub_shift]) # Product of two bools
-                                        enforce_sequence_penalties.append(violation)
+                if rule_key not in processed_rule_types and preceding_shift_sym in SHIFT_MAP_INT and subsequent_shift_sym in SHIFT_MAP_INT:
+                    pre_shift_int = SHIFT_MAP_INT[preceding_shift_sym]
+                    sub_shift_int = SHIFT_MAP_INT[subsequent_shift_sym]
+                    for d_idx in range(num_days - 1):
+                        # b_pre is true if shifts[(e_idx, d_idx)] == pre_shift_int
+                        b_pre = model.NewBoolVar(f'eseq_pre_e{e_idx}_d{d_idx}')
+                        model.Add(shifts[(e_idx, d_idx)] == pre_shift_int).OnlyEnforceIf(b_pre)
+                        model.Add(shifts[(e_idx, d_idx)] != pre_shift_int).OnlyEnforceIf(b_pre.Not())
+                        
+                        if is_hard:
+                            # if b_pre is true, then shifts[(e_idx, d_idx + 1)] must be sub_shift_int
+                            model.Add(shifts[(e_idx, d_idx + 1)] == sub_shift_int).OnlyEnforceIf(b_pre)
                         else:
-                            print(f"警告(施設モデル): ENFORCE_SHIFT_SEQUENCE のシフト記号が無効です。ルールスキップ: {rule}")
-                    processed_facility_rules.add(rule_key)
+                            # ソフト制約: b_pre が True かつ shifts[d+1] != sub の場合にペナルティ
+                            violation = model.NewBoolVar(f'eseq_viol_e{e_idx}_d{d_idx}')
+                            not_sub_shift = model.NewBoolVar(f'eseq_not_sub_e{e_idx}_d{d_idx}')
+                            model.Add(shifts[(e_idx, d_idx+1)] != sub_shift_int).OnlyEnforceIf(not_sub_shift)
+                            model.Add(shifts[(e_idx, d_idx+1)] == sub_shift_int).OnlyEnforceIf(not_sub_shift.Not())
+                            # violation is true if (b_pre AND not_sub_shift)
+                            model.AddMultiplicationEquality(violation, [b_pre, not_sub_shift])
+                            enforce_sequence_penalties.append(violation) # Assuming weight of 1 for now
+
+                    processed_rule_types.add(rule_key)
+                elif rule_key in processed_rule_types:
+                    print(f"情報(モデル): ENFORCE_SHIFT_SEQUENCE ルールは既に処理済み: {emp_id}")
+                else:
+                    print(f"警告(モデル): 無効なパラメータを持つ ENFORCE_SHIFT_SEQUENCE ルールをスキップ: {rule}")
 
             elif rule_type == 'MIN_TOTAL_SHIFT_DAYS':
                 group_name = rule.get('employee_group', 'ALL')
                 target_shift_sym = rule.get('shift')
                 min_days = rule.get('min_count')
-                is_hard = rule.get('is_hard', True) # デフォルトTrue
+                is_hard = rule.get('is_hard', True)
+                rule_key = f"facility_min_total_days_{group_name}_{target_shift_sym}_{min_days}_{is_hard}"
+
+                if rule_key not in processed_facility_rules: # 施設ルール用の処理済みセットで確認
+                    target_employee_indices = get_employees_by_group(employees_df, group_name, emp_id_to_idx)
+                    target_shift_int = SHIFT_MAP_INT.get(target_shift_sym)
+
+                    if not target_employee_indices:
+                        print(f"警告(施設モデル): MIN_TOTAL_SHIFT_DAYS の対象グループ '{group_name}' が見つかりません。ルールスキップ: {rule}")
+                    elif target_shift_int is None:
+                        print(f"警告(施設モデル): MIN_TOTAL_SHIFT_DAYS のシフト記号 '{target_shift_sym}' が無効です。ルールスキップ: {rule}")
+                    elif not isinstance(min_days, int) or min_days < 0:
+                        print(f"警告(施設モデル): MIN_TOTAL_SHIFT_DAYS の min_count '{min_days}' が無効です。ルールスキップ: {rule}")
+                    else:
+                        for e_idx_facility in target_employee_indices: # e_idx だと個人ルールループの変数と被るので変更
+                            emp_id_current = emp_idx_to_id.get(e_idx_facility) # 育休等チェックのため
+                            emp_info_current = get_employee_info(employees_df, emp_id_current)
+                            if emp_info_current and emp_info_current.get('status') in ['育休', '病休']:
+                                continue # 育休・病休者はスキップ
+
+                            actual_shift_count_expr = cp_model.LinearExpr.Sum(
+                                [shifts[(e_idx_facility, d_idx)] == target_shift_int for d_idx in all_days]
+                            )
+                            if is_hard:
+                                model.Add(actual_shift_count_expr >= min_days)
+                            else:
+                                shortage_var = model.NewIntVar(0, min_days, f'fac_min_total_short_e{e_idx_facility}_s{target_shift_sym}')
+                                model.Add(min_days - actual_shift_count_expr <= shortage_var)
+                                facility_min_total_shift_penalties.append(shortage_var)
+                        processed_facility_rules.add(rule_key)
             elif rule_type == 'UNPARSABLE':
                 print(f"情報(施設モデル): 処理できないルール: {rule}")
             elif rule_type == 'REQUIRED_STAFFING':
@@ -552,6 +532,52 @@ def build_shift_model(employees_df, past_shifts_df, date_range, jp_holidays, per
                                 model.Add(actual_staff_count_expr - min_count <= excess_var)
                                 over_staffing_penalties.append(excess_var)
                     processed_facility_rules.add(rule_key)
+            elif rule_type == 'FORBID_SHIFT_SEQUENCE':
+                preceding_shift_sym = rule.get('preceding_shift')
+                subsequent_shift_sym = rule.get('subsequent_shift')
+                is_hard = rule.get('is_hard', True) # デフォルトはハード制約 (禁止なので)
+                rule_key = f"forbid_seq_{e_idx}_{preceding_shift_sym}_{subsequent_shift_sym}"
+
+                if rule_key not in processed_rule_types and preceding_shift_sym in SHIFT_MAP_INT and subsequent_shift_sym in SHIFT_MAP_INT:
+                    pre_shift_int = SHIFT_MAP_INT[preceding_shift_sym]
+                    sub_shift_int = SHIFT_MAP_INT[subsequent_shift_sym]
+                    for d_idx in range(num_days - 1):
+                        if is_hard:
+                            # (shifts[d] == pre AND shifts[d+1] == sub) は不可
+                            # NOT (shifts[d] == pre AND shifts[d+1] == sub)
+                            # (shifts[d] != pre OR shifts[d+1] != sub)
+                            b_pre_match = model.NewBoolVar(f'fseq_pre_e{e_idx}_d{d_idx}')
+                            b_sub_match = model.NewBoolVar(f'fseq_sub_e{e_idx}_d{d_idx}')
+                            model.Add(shifts[(e_idx, d_idx)] == pre_shift_int).OnlyEnforceIf(b_pre_match)
+                            model.Add(shifts[(e_idx, d_idx)] != pre_shift_int).OnlyEnforceIf(b_pre_match.Not())
+                            model.Add(shifts[(e_idx, d_idx + 1)] == sub_shift_int).OnlyEnforceIf(b_sub_match)
+                            model.Add(shifts[(e_idx, d_idx + 1)] != sub_shift_int).OnlyEnforceIf(b_sub_match.Not())
+                            model.AddBoolOr([b_pre_match.Not(), b_sub_match.Not()]) # 両方がTrueになることを禁止
+                        else:
+                            # ソフト制約の場合: (shifts[d] == pre AND shifts[d+1] == sub) の場合にペナルティ
+                            violation_var = model.NewBoolVar(f'fseq_viol_e{e_idx}_d{d_idx}')
+                            # violation_var = 1 if (shifts[d]==pre AND shifts[d+1]==sub)
+                            # violation_var <=> (shifts[d]==pre AND shifts[d+1]==sub)
+                            # This can be tricky. A common way is to create literals for equality.
+                            lit_pre_eq = model.NewBoolVar(f'fseq_lit_pre_e{e_idx}_d{d_idx}')
+                            model.Add(shifts[(e_idx, d_idx)] == pre_shift_int).OnlyEnforceIf(lit_pre_eq)
+                            model.Add(shifts[(e_idx, d_idx)] != pre_shift_int).OnlyEnforceIf(lit_pre_eq.Not())
+                            lit_sub_eq = model.NewBoolVar(f'fseq_lit_sub_e{e_idx}_d{d_idx}')
+                            model.Add(shifts[(e_idx, d_idx + 1)] == sub_shift_int).OnlyEnforceIf(lit_sub_eq)
+                            model.Add(shifts[(e_idx, d_idx + 1)] != sub_shift_int).OnlyEnforceIf(lit_sub_eq.Not())
+
+                            model.AddBoolAnd([lit_pre_eq, lit_sub_eq]).OnlyEnforceIf(violation_var)
+                            # If not violating, at least one must be false (or violation_var is false)
+                            model.AddImplication(violation_var.Not(), model.BoolOr([lit_pre_eq.Not(), lit_sub_eq.Not()])) 
+                            # This might still not be perfect for penalty. More direct: Add (lit_pre_eq * lit_sub_eq) to penalty.
+                            forbid_sequence_penalties.append(violation_var) # Assuming weight of 1 for now
+
+                    processed_rule_types.add(rule_key)
+                elif rule_key in processed_rule_types:
+                    print(f"情報(モデル): FORBID_SHIFT_SEQUENCE ルールは既に処理済み: {emp_id}")
+                else:
+                    print(f"警告(モデル): 無効なパラメータを持つ FORBID_SHIFT_SEQUENCE ルールをスキップ: {rule}")
+
             # else: 未知のルールタイプはパーサーで弾かれるはず
 
     # <<< ここまで施設全体ルールの処理 >>>

@@ -67,8 +67,12 @@ AIは、入力された各確認用文章からこれらのパターンと従業
     *   入力例: `(必須) EMP003さんとEMP004さんは同日に「夜」にはなりません。`
     *   リスト要素JSON: `{ "rule_type": "FORBID_SIMULTANEOUS_SHIFT", "employee1": "EMP003", "employee2": "EMP004", "shift": "夜" }`
 *   **最小/最大 合計シフト数:**
+    *   入力例: `(必須) EMP010さんは期間中に「[\'日\', \'早\', \'夜\', \'明\']」を正確に 10 日とします。`
+    *   リスト要素JSON: `{ "rule_type": "TOTAL_SHIFT_COUNT", "employee": "EMP010", "shifts": ["日", "早", "夜", "明"], "min": 10, "max": 10, "is_hard": true }`
     *   入力例: `(必須) EMP010さんは期間中に最低 10 日の「公」が必要です。`
-    *   リスト要素JSON: `{ "rule_type": "TOTAL_SHIFT_COUNT", "employee": "EMP010", "shifts": ["公"], "min": 10, "max": null, "is_hard": true }`
+    *   リスト要素JSON: `{ "rule_type": "TOTAL_SHIFT_COUNT", "employee": "EMP010", "shifts": ["公"], "min": 10, "is_hard": true }`
+    *   入力例: `(推奨) EMP017さんは期間中に「[\'日\', \'早\', \'夜\', \'明\']」を17日程度にします。`
+    *   リスト要素JSON: `{ "rule_type": "TOTAL_SHIFT_COUNT", "employee": "EMP017", "shifts": ["日", "早", "夜", "明"], "min": 17, "is_hard": false }`
 *   **最大連続公休数:**
     *   入力例: `(推奨) EMP005さんの連続した公休はできる限り最大 2 日までに抑えます。`
     *   リスト要素JSON: `{ "rule_type": "MAX_CONSECUTIVE_OFF", "employee": "EMP005", "max_days": 2, "is_hard": false }`
