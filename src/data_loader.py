@@ -17,6 +17,13 @@ def load_employee_data(filepath=EMPLOYEE_INFO_FILE):
         except UnicodeDecodeError: df = pd.read_csv(filepath, encoding="shift-jis")
         df.columns = df.columns.str.strip()
 
+        # --- ★職員IDの前後の空白を除去する処理を追加 ---
+        if '職員ID' in df.columns:
+            df['職員ID'] = df['職員ID'].astype(str).str.strip()
+        else:
+            print(f"警告: {filepath} に '職員ID' 列がありません。IDの空白除去はスキップされます。")
+        # --- ★追加ここまで ---
+
         # 基本的な情報（担当フロア、役職など）を抽出・整理
         # 担当フロア (列が存在すれば)
         if '担当フロア' in df.columns:

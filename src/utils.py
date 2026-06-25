@@ -25,84 +25,96 @@ def get_employee_indices(employees_df):
 
 def get_employee_info(employees_df, emp_id):
     """職員IDに対応する従業員情報を取得 (Seriesで返す)"""
+    print(f"DEBUG (get_employee_info): ENTERED. Received emp_id='{emp_id}' (type: {type(emp_id)})")
+    # --- DEBUG START: get_employee_info ---
+    # print(f"DEBUG (get_employee_info): Called with emp_id='{emp_id}' (type: {type(emp_id)})") #重複なのでコメントアウト
+    if employees_df is None or employees_df.empty:
+        print("DEBUG (get_employee_info): employees_df is None or empty!")
+        return None
+    if '職員ID' not in employees_df.columns:
+        print("DEBUG (get_employee_info): '職員ID' column not in employees_df!")
+        return None
+    print(f"DEBUG (get_employee_info): employees_df['職員ID'] dtype: {employees_df['職員ID'].dtype}")
+    # 最初の数件の職員IDとその型を表示（比較のため）
+    if not employees_df.empty:
+        print(f"DEBUG (get_employee_info): Sample 職員ID from df (first 3): {employees_df['職員ID'].head(3).tolist()}")
+        print(f"DEBUG (get_employee_info): Sample 職員ID types from df (first 3): {[type(x) for x in employees_df['職員ID'].head(3)]}")
+    # --- DEBUG END ---
+
     # 効率化のため、あらかじめ employees_df を ID でインデックス化しておく方が良い
     emp_data = employees_df[employees_df['職員ID'] == emp_id]
     if not emp_data.empty:
+        # print(f"DEBUG (get_employee_info): Found data for {emp_id}") # 必要ならコメント解除
         return emp_data.iloc[0]
-    return None 
+    else:
+        # print(f"DEBUG (get_employee_info): No data found for {emp_id}") # 必要ならコメント解除
+        return None 
 
-def get_employees_by_group(employees_df, group_name, emp_id_to_idx):
+def get_employees_by_group(employees_df, group_name, emp_id_to_idx_arg):
     """指定されたグループ名に属する従業員のインデックスリストを返す"""
     print(f"DEBUG (get_employees_by_group): Requesting group: '{group_name}'")
     target_indices = []
-    # --- emp_id_to_idx の内容確認 ---
-    print(f"  DEBUG: emp_id_to_idx type: {type(emp_id_to_idx)}, size: {len(emp_id_to_idx)}")
-    if not emp_id_to_idx:
-        print("DEBUG (get_employees_by_group): emp_id_to_idx is empty!")
-        return []
 
-    print(f"  DEBUG: Starting loop through {len(emp_id_to_idx)} employee indices...")
-    for idx, eid in emp_id_to_idx.items():
-        # --- ループ内部の詳細デバッグ --- 
-        print(f"    DEBUG (Loop Start): Checking eid={eid}, idx={idx}") 
-        emp_info = get_employee_info(employees_df, eid)
+    # --- 受け取った emp_id_to_idx_arg の型と内容を徹底的に確認 ---
+    print(f"  DEBUG (get_employees_by_group): Received emp_id_to_idx_arg. Type: {type(emp_id_to_idx_arg)}, Size: {len(emp_id_to_idx_arg) if hasattr(emp_id_to_idx_arg, '__len__') else 'N/A'}")
+    if isinstance(emp_id_to_idx_arg, dict) and emp_id_to_idx_arg:
+        first_key = next(iter(emp_id_to_idx_arg))
+        print(f"  DEBUG (get_employees_by_group): First key in emp_id_to_idx_arg: '{first_key}' (type: {type(first_key)})")
+        print(f"  DEBUG (get_employees_by_group): First value in emp_id_to_idx_arg: '{emp_id_to_idx_arg[first_key]}' (type: {type(emp_id_to_idx_arg[first_key])})")
+    elif not emp_id_to_idx_arg:
+        print("  DEBUG (get_employees_by_group): emp_id_to_idx_arg is empty or None!")
+        return []
+    else:
+        print("  DEBUG (get_employees_by_group): emp_id_to_idx_arg is NOT a dictionary!")
+        return [] # 辞書でなければ処理できない
+
+    print(f"  DEBUG: Starting loop through {len(emp_id_to_idx_arg)} employee mappings...")
+    for eid_key, idx_val in emp_id_to_idx_arg.items(): # ループ変数を明確化 (キーがeid, 値がidxのはず)
+        print(f"    DEBUG (Loop Start): Key from items(): '{eid_key}' (type: {type(eid_key)}), Value: {idx_val} (type: {type(idx_val)})")
+        
+        if not isinstance(eid_key, str):
+            print(f"    ERROR (get_employees_by_group): Key '{eid_key}' is NOT a string! Skipping this entry.")
+            continue
+
+        current_eid_to_pass = eid_key # キーが文字列であることを確認済み
+        
+        # print(f"    >>> CRITICAL DEBUG (get_employees_by_group): About to call get_employee_info with current_eid_to_pass='{current_eid_to_pass}' (type: {type(current_eid_to_pass)}) for group '{group_name}'") # 必須ログではないので一旦コメントアウト
+        emp_info = get_employee_info(employees_df, current_eid_to_pass) 
+        
         if emp_info is None: 
-            print(f"      -> Skipping eid={eid} because emp_info is None.")
+            # print(f"      -> Skipping eid_key='{eid_key}' because get_employee_info returned None.") # 必要ならコメント解除
             continue
         
-        # .get()で取得した値を確認
         status_val = emp_info.get('status', '[KEY_NOT_FOUND]')
         job_type_val = emp_info.get('常勤/パート', '[KEY_NOT_FOUND]')
-        role_val = emp_info.get('役職', '[KEY_NOT_FOUND]')
-        print(f"      -> Retrieved: status='{status_val}', job_type='{job_type_val}', role='{role_val}'")
+        # role_val = emp_info.get('役職', '[KEY_NOT_FOUND]') # role_valの参照先がおかしいため修正
+        role_val = emp_info.get('役職') if emp_info is not None else '[KEY_NOT_FOUND]' 
 
-        # status が NaN でないか、かつ育休/病休でないかチェック
+        # print(f"      -> Retrieved: status='{status_val}', job_type='{job_type_val}', role='{role_val}'")
+
         if pd.notna(status_val) and status_val in ['育休', '病休']:
-            print(f"      -> Skipping eid={eid} due to status: {status_val}")
+            # print(f"      -> Skipping eid_key={eid_key} due to status: {status_val}")
             continue
 
         belongs = False
         if group_name == "ALL":
-            print(f"      -> Checking for ALL group... MATCH!")
             belongs = True
         elif group_name == "常勤":
-            print(f"      -> Checking for 常勤 group...")
-            if job_type_val != '[KEY_NOT_FOUND]' and job_type_val is not None:
-                job_type = str(job_type_val).strip().strip('"')
-                print(f"        -> Comparing '{job_type}' == '常勤'")
-                if job_type == '常勤':
-                    print(f"          -> Match found for 常勤!")
-                    belongs = True
-                else:
-                    print(f"          -> No match for 常勤.")
-            else:
-                print(f"      -> job_type_raw is None.")
-        elif group_name == "パート":
-             print(f"    -> Checking for パート group...")
-             if job_type_raw is not None:
-                 job_type = str(job_type_raw).strip().strip('"')
-                 print(f"      -> job_type after cleaning: '{job_type}'")
-                 if 'パート' in job_type:
-                     print(f"        -> Match found for パート!")
-                     belongs = True
-                 else:
-                    print(f"        -> No match for パート.")
-             else:
-                 print(f"      -> job_type_raw is None.")
-        else:
-            # 役職名でフィルタリング
-            print(f"    -> Checking for role group: '{group_name}'...")
-            if isinstance(role, str) and role == group_name:
-                print(f"        -> Match found for role!")
+            if job_type_val == '常勤':
                 belongs = True
-            else:
-                 print(f"        -> No match for role (role is '{role}').")
+        elif group_name == "パート":
+            # job_type_raw が未定義だったので job_type_val を使うように修正
+            if job_type_val != '[KEY_NOT_FOUND]' and job_type_val is not None:
+                 job_type = str(job_type_val).strip().strip('"')
+                 if 'パート' in job_type:
+                     belongs = True
+        else: # 役職名
+            # role が未定義だったので role_val を使うように修正
+            if role_val != '[KEY_NOT_FOUND]' and isinstance(role_val, str) and role_val == group_name:
+                belongs = True
         
         if belongs:
-            print(f"    => Appending index {idx} for group '{group_name}'.")
-            target_indices.append(idx)
-        else:
-            print(f"    => NOT Appending index {idx} for group '{group_name}'.") # 追加されなかった場合も表示
+            target_indices.append(idx_val) 
 
     print(f"DEBUG (get_employees_by_group): Found {len(target_indices)} indices for group '{group_name}': {target_indices}")
 
